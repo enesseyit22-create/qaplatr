@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Loader2, LogOut, Pencil, Trash2,
 } from 'lucide-react';
@@ -12,22 +12,29 @@ import {
   fetchMerchantCompany,
   listMerchantCampaigns,
   listMerchantRedemptions,
-  merchantStats,
   setMerchantCampaignActive,
   updateMerchantCampaignAction,
 } from '@/lib/actions/merchant';
 import { CampaignEditor } from '@/components/CampaignEditor';
 import { CampaignMiniList } from '@/components/CampaignMiniList';
 import type { Campaign, Company, UserRedemption } from '@/lib/campaigns';
-import { dailyCampaignLimitReached, FREE_DAILY_CAMPAIGN_LIMIT, campaignsCreatedToday } from '@/lib/campaigns';
+import { dailyCampaignLimitReached, campaignsCreatedToday } from '@/lib/campaigns';
+import { planLimits, planTierOf } from '@/lib/plans';
+import { campaignWindowOpen } from '@/lib/campaignMap';
+import { MerchantPushQuota } from '@/components/MerchantPushQuota';
+import { MerchantShowcaseRequest } from '@/components/MerchantShowcaseRequest';
+import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { SideMenu } from '@/components/SideMenu';
 import { PanelTopBar, panelChip, panelIconBtn } from '@/components/TabPageShell';
-import { VipSoonCard } from '@/components/VipSoonScreen';
 import { useAppFeatures } from '@/lib/appFeatures';
 import { loadBusinessForUser, type BusinessApplication } from '@/lib/businesses';
 import { subscribeTables } from '@/lib/live';
+import { applyCampaignList, subscribeCampaignTable } from '@/lib/campaignLive';
 import { BusinessPendingScreen } from '@/components/BusinessPendingScreen';
+import { PilotSubscriptionGate } from '@/components/PilotSubscriptionGate';
+import { formatTrialDate, mergeFirmBilling, needsSubscriptionPaywall, pilotTrialActive, pilotTrialEnd } from '@/lib/subscription';
 import { VipLockedNotifyPreview, VipLockedStoryPreview } from '@/components/VipLockedFeature';
+import { StoryStudio } from '@/components/StoryStudio';
 
 export type MerchantTab = 'code' | 'campaigns' | 'report' | 'vip';
 
@@ -54,6 +61,8 @@ export function MerchantPanelScreen({
   const [notice, setNotice] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [editing, setEditing] = useState<Campaign | null>(null);
+  const [accessTick, setAccessTick] = useState(0);
+  const refreshGen = useRef(0);
 
   const goTab = (next: MerchantTab) => setTab(next);
 
@@ -62,14 +71,16 @@ export function MerchantPanelScreen({
   }, [initialTab]);
 
   const refresh = useCallback(async (silent = false) => {
+    const ticket = ++refreshGen.current;
     bindMerchantSession(profile ?? null);
     if (!silent) setLoading(true);
     try {
-      const nextApplication = profile?.id
-        ? await loadBusinessForUser(profile.id, profile.email).catch(() => null)
-        : null;
+      const [nextApplication, nextCompany] = await Promise.all([
+        profile?.id ? loadBusinessForUser(profile.id, profile.email).catch(() => null) : Promise.resolve(null),
+        fetchMerchantCompany(profile ?? null),
+      ]);
+      if (ticket !== refreshGen.current) return;
       setApplication(nextApplication);
-      const nextCompany = await fetchMerchantCompany(profile ?? null);
       setCompany(nextCompany);
       if (!nextCompany || nextApplication?.status === 'pending' || nextApplication?.status === 'rejected') {
         setCampaigns([]);
@@ -77,19 +88,25 @@ export function MerchantPanelScreen({
         setStats({ campaigns: 0, active_campaigns: 0, redemptions: 0 });
         return;
       }
-      const [nextCampaigns, nextStats, nextRedemptions] = await Promise.all([
-        listMerchantCampaigns(nextCompany.id).catch(() => [] as Campaign[]),
-        merchantStats(nextCompany.id).catch(() => ({ campaigns: 0, active_campaigns: 0, redemptions: 0 })),
-        listMerchantRedemptions(nextCompany.id).catch(() => [] as UserRedemption[]),
-      ]);
+      setLoading(false);
+      const nextCampaigns = await listMerchantCampaigns(nextCompany.id).catch(() => [] as Campaign[]);
+      const nextRedemptions = await listMerchantRedemptions(nextCompany.id, nextCampaigns.map((item) => item.id)).catch(() => [] as UserRedemption[]);
+      const today = new Date().toISOString().slice(0, 10);
+      const nextStats = {
+        campaigns: nextCampaigns.length,
+        active_campaigns: nextCampaigns.filter((item) => item.is_active && item.expiry_date >= today).length,
+        redemptions: nextRedemptions.length,
+      };
+      if (ticket !== refreshGen.current) return;
       setCampaigns(nextCampaigns ?? []);
       setStats(nextStats ?? { campaigns: 0, active_campaigns: 0, redemptions: 0 });
       setRedemptions(nextRedemptions ?? []);
     } catch (err) {
+      if (ticket !== refreshGen.current) return;
       setError(err instanceof Error ? err.message : 'Firma verileri yüklenemedi');
       setCompany(null);
     } finally {
-      setLoading(false);
+      if (ticket === refreshGen.current) setLoading(false);
     }
   }, [profile]);
 
@@ -99,17 +116,40 @@ export function MerchantPanelScreen({
 
   useEffect(() => {
     try {
-      return subscribeTables(['companies', 'campaigns', 'businesses'], () => { void refresh(true); });
+      const stopTables = subscribeTables(['companies', 'campaigns', 'businesses', 'coupon_tickets', 'user_redemptions'], () => { void refresh(true); });
+      const stopCampaigns = subscribeCampaignTable((change) => {
+        setCampaigns((current) => {
+          const id = String((change.eventType === 'DELETE' ? change.previous : change.row)?.id ?? '');
+          if (change.eventType === 'DELETE') return current.filter((item) => item.id !== id);
+          const rowCompany = String(change.row?.company_id ?? '');
+          const mine = current[0]?.company_id ?? company?.id ?? '';
+          if (rowCompany && mine && rowCompany !== mine) return current;
+          return applyCampaignList(current, change);
+        });
+      });
+      return () => {
+        stopTables();
+        stopCampaigns();
+      };
     } catch {
       return undefined;
     }
-  }, [refresh]);
+  }, [company?.id, refresh]);
+
+  const access = mergeFirmBilling(company, application);
+  const trialEndsAt = pilotTrialEnd(access)?.getTime() ?? 0;
+  useEffect(() => {
+    if (!trialEndsAt || trialEndsAt <= Date.now()) return;
+    const timer = window.setTimeout(() => setAccessTick((value) => value + 1), trialEndsAt - Date.now() + 250);
+    return () => window.clearTimeout(timer);
+  }, [trialEndsAt]);
 
   if (loading) {
     return <BusinessPendingScreen loading onBack={onBack} />;
   }
 
   const pending = !company || application?.status === 'pending' || application?.status === 'rejected';
+  void accessTick;
   if (pending) {
     return (
       <BusinessPendingScreen
@@ -120,11 +160,30 @@ export function MerchantPanelScreen({
     );
   }
 
+  if (company && needsSubscriptionPaywall(access)) {
+    return (
+      <PilotSubscriptionGate
+        companyId={company.id}
+        reason={access.is_pilot_firm ? 'trial' : 'plan'}
+        endsAt={access.subscription_ends_at}
+        onBack={onBack}
+        onStarted={() => { void refresh(); }}
+      />
+    );
+  }
+
+  const trialEndLabel = pilotTrialActive(access) ? formatTrialDate(access?.subscription_ends_at) : '';
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#eef3f1]">
       <PanelTopBar
         title={welcomeLine(profile, profile?.email, company?.name)}
-        subtitle={company?.name ?? 'İşletme'}
+        subtitle={(
+          <span className="inline-flex max-w-full items-center gap-1">
+            <span className="truncate">{company?.name ?? 'İşletme'}</span>
+            <VerifiedBadge verified={company?.is_verified} tone="onDark" />
+          </span>
+        )}
         onBack={onBack}
         stats={[
           { label: 'Kampanya', value: stats.campaigns },
@@ -167,6 +226,11 @@ export function MerchantPanelScreen({
       </PanelTopBar>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4 pb-28">
+        {trialEndLabel ? (
+          <p className="rounded-2xl bg-mint-50 px-3 py-2 text-xs font-bold text-mint-800">
+            Pilot firma · {trialEndLabel} tarihine kadar ücretsiz (60 gün). Ödeme ekranı bu süre dolunca açılır.
+          </p>
+        ) : null}
         {error && <p className="rounded-2xl bg-red-50 px-3 py-2 text-xs text-red-600">{error}</p>}
         {notice && <p className="rounded-2xl bg-mint-50 px-3 py-2 text-xs text-mint-700">{notice}</p>}
         {loading ? <div className="flex justify-center py-10"><Loader2 className="h-6 w-6 animate-spin text-mint-500" /></div> : null}
@@ -203,16 +267,19 @@ export function MerchantPanelScreen({
         {tab === 'campaigns' && (
           company ? (
           <>
+            <MerchantPushQuota company={company} />
             <p className="px-1 text-xs text-gray-400">
-              VIP olmadan günde {FREE_DAILY_CAMPAIGN_LIMIT} kampanya. Bugün {Math.min(campaignsCreatedToday(campaigns, company.id), FREE_DAILY_CAMPAIGN_LIMIT)}/{FREE_DAILY_CAMPAIGN_LIMIT} kullanıldı.
+              {planLimits(planTierOf(company)).dailyCampaigns <= 1 ? 'Standart pakette' : 'Premium pakette'} günde {planLimits(planTierOf(company)).dailyCampaigns} kampanya. Bugün {Math.min(campaignsCreatedToday(campaigns, company.id), planLimits(planTierOf(company)).dailyCampaigns)}/{planLimits(planTierOf(company)).dailyCampaigns} kullanıldı.
             </p>
             <CampaignEditor
               key={editing?.id ?? 'new'}
               initial={editing}
               busy={busy}
               submitLabel={editing ? 'Güncelle' : 'Kaydet'}
-              locked={!editing && dailyCampaignLimitReached(campaigns, company.id)}
-              lockMessage="Bugünkü 1 kampanya hakkın doldu. Daha fazlası yalnızca VIP ile açılır. Mevcut kampanyayı güncelleyebilirsin."
+              locked={!editing && dailyCampaignLimitReached(campaigns, company.id, planLimits(planTierOf(company)).dailyCampaigns)}
+              lockMessage={planLimits(planTierOf(company)).dailyCampaigns <= 1
+                ? 'Bugünkü 1 kampanya hakkın doldu. Premium pakette limit yükselir. Mevcut kampanyayı güncelleyebilirsin.'
+                : 'Bugünkü Premium kampanya hakkın doldu. Mevcut kampanyayı güncelleyebilirsin.'}
               onSubmit={async (draft) => {
                 setBusy(true);
                 setError(null);
@@ -238,7 +305,7 @@ export function MerchantPanelScreen({
               <article key={campaign.id} className="flex items-center justify-between gap-2 rounded-2xl border border-mint-100 bg-white px-3 py-2">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-bold text-mint-900">{campaign.title}</p>
-                  <p className="text-[10px] text-gray-400">{Number(campaign.discount_rate) > 0 ? `%${campaign.discount_rate}` : 'İndirimsiz'} · Stok {campaign.stock ?? 0}</p>
+                  <p className="text-[10px] text-gray-400">{Number(campaign.discount_rate) > 0 ? `%${campaign.discount_rate}` : 'İndirimsiz'} · Stok {campaign.stock ?? 0} · {campaignWindowOpen(campaign.created_at) && campaign.is_active ? '24 saat yayında' : 'Arşiv'}</p>
                 </div>
                 <div className="flex shrink-0 gap-1">
                   <button type="button" className="rounded-lg bg-mint-50 px-2 py-1 text-[10px] font-bold text-mint-700" onClick={() => void setMerchantCampaignActive(campaign.id, !campaign.is_active).then(() => refresh(true))}>
@@ -271,11 +338,25 @@ export function MerchantPanelScreen({
         )}
 
         {tab === 'vip' && (
-          <div className="space-y-3">
-            <VipSoonCard audience="merchant" companyName={company?.name} />
-            <VipLockedStoryPreview />
-            <VipLockedNotifyPreview />
-          </div>
+          planLimits(planTierOf(company)).vip ? (
+            <div className="space-y-3">
+              <section className="rounded-3xl border border-mint-100 bg-white p-3">
+                <p className="text-sm font-extrabold text-mint-900">Premium · lansman 1299 TL/ay</p>
+                <p className="mt-1 text-[11px] text-slate-500">Normal fiyat 1599 TL/ay. Standard paket 599 TL/ay.</p>
+                <p className="mt-1 text-[11px] font-semibold text-mint-700">
+                  {company.subscription_ends_at ? `Paket bitişi ${new Date(company.subscription_ends_at).toLocaleDateString('tr-TR')}` : 'Süre yönetici panelinden yazılır.'}
+                </p>
+              </section>
+              <MerchantPushQuota company={company} />
+              <MerchantShowcaseRequest company={company} />
+              <StoryStudio actor="merchant" company={company} />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <VipLockedStoryPreview />
+              <VipLockedNotifyPreview />
+            </div>
+          )
         )}
       </div>
     </div>

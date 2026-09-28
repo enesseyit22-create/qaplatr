@@ -53,7 +53,7 @@ export function PanelTopBar({
   children,
 }: {
   title: string;
-  subtitle?: string;
+  subtitle?: ReactNode;
   onBack?: () => void;
   actions?: ReactNode;
   stats?: { label: string; value: string | number }[];
@@ -74,7 +74,7 @@ export function PanelTopBar({
         ) : null}
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-[15px] font-extrabold leading-tight tracking-tight">{title}</h1>
-          {subtitle ? <p className="truncate text-[11px] leading-snug text-white/75">{subtitle}</p> : null}
+          {subtitle ? <div className="truncate text-[11px] leading-snug text-white/75">{subtitle}</div> : null}
         </div>
         {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
       </div>

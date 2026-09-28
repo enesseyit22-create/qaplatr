@@ -21,6 +21,7 @@ export function SplashScreen({
   };
 
   useEffect(() => {
+    document.getElementById('boot-splash')?.remove();
     const timer = window.setTimeout(enter, 3000);
     return () => window.clearTimeout(timer);
   }, []);
@@ -32,9 +33,7 @@ export function SplashScreen({
         if (tapLogo()) {
           started.current = true;
           onSecretUnlock();
-          return;
         }
-        enter();
       }}
       className={`splash-gate fixed inset-0 z-[3000] flex h-screen w-screen flex-col items-center justify-center overflow-hidden text-center ${leaving ? 'is-leaving' : ''}`}
       aria-label="Keşfetmeye başla"
@@ -46,7 +45,7 @@ export function SplashScreen({
       <p className="splash-title mt-6 font-display text-[2.15rem] font-extrabold leading-none tracking-tight text-[#2a353b]">
         Qap <span className="text-[#3d4a52]">LA</span>
       </p>
-      <p className="mt-3 text-[13px] font-medium text-[#5b676e]">Devam etmek için dokun</p>
+      <p className="mt-3 text-[15px] font-extrabold text-[#5b676e]">Keşfet</p>
     </button>
   );
 }

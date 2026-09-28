@@ -3,6 +3,7 @@ import { SafeCenterModal } from '@/components/SafeCenterModal';
 import type { Merchant, OfferWithMerchant } from '@/lib/supabase';
 import { SECTOR_LABELS, sectorIdForCategory } from '@/lib/sectors';
 import { formatDurationLeft, getMsRemaining } from '@/lib/utils';
+import { FirmName } from '@/components/VerifiedBadge';
 
 export function MerchantPreviewModal({
   merchant,
@@ -34,7 +35,7 @@ export function MerchantPreviewModal({
           <p className="inline-flex items-center gap-1.5 rounded-full bg-white/16 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[0.14em]">
             <Tag className="h-3 w-3" /> {SECTOR_LABELS[sector]}
           </p>
-          <h2 className="mt-3 pr-8 text-[1.35rem] font-extrabold leading-tight">{merchant.name}</h2>
+          <h2 className="mt-3 pr-8 text-[1.35rem] font-extrabold leading-tight"><FirmName name={merchant.name} verified={merchant.is_verified} tone="onDark" /></h2>
           <p className="mt-1.5 text-sm text-mint-50">{merchant.category || 'İşletme'}</p>
         </div>
 

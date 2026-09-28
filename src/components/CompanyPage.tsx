@@ -6,6 +6,7 @@ import { isFavorite, toggleFavorite } from '@/lib/favorites';
 import { addReview, reviewsForCompany } from '@/lib/reviews';
 import { readLocalClaims } from '@/lib/demoData';
 import { formatDurationLeft, getMsRemaining } from '@/lib/utils';
+import { FirmName } from '@/components/VerifiedBadge';
 
 export function CompanyPage({
   merchant,
@@ -54,7 +55,7 @@ export function CompanyPage({
             </button>
           ) : null}
         </div>
-        <h1 className="mt-3 text-xl font-extrabold">{merchant.name}</h1>
+        <h1 className="mt-3 text-xl font-extrabold"><FirmName name={merchant.name} verified={merchant.is_verified} /></h1>
         <p className="mt-2 flex items-center gap-1.5 text-sm text-mint-50">
           <Tag className="h-3.5 w-3.5" /> {merchant.category}
         </p>

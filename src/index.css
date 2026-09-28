@@ -94,6 +94,13 @@
   overflow: visible;
   z-index: 1300;
   bottom: max(0.45rem, env(safe-area-inset-bottom, 0px));
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
+}
+
+.app-tab-stage {
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
 }
 
 .explore-topbar {
@@ -104,6 +111,12 @@
 .explore-sheet {
   bottom: calc(4.65rem + env(safe-area-inset-bottom, 0px));
   z-index: 1100;
+}
+
+.explore-locate {
+  z-index: 1200;
+  right: max(0.75rem, env(safe-area-inset-right, 0px));
+  bottom: calc(4.65rem + 52px + 0.85rem + env(safe-area-inset-bottom, 0px));
 }
 
 .explore-map .leaflet-marker-pane,
@@ -224,37 +237,34 @@
   padding: 0;
 }
 .splash-logo {
-  animation: splashBreath 4.6s ease-in-out infinite;
+  animation: splashIn 0.35s ease both;
 }
 .splash-glow {
   position: absolute;
   inset: -18px;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(1, 85, 80, 0.22) 0%, rgba(1, 85, 80, 0) 72%);
-  animation: splashGlow 4.6s ease-in-out infinite;
+  background: radial-gradient(circle, rgba(1, 85, 80, 0.18) 0%, rgba(1, 85, 80, 0) 72%);
   pointer-events: none;
 }
 .splash-title {
-  animation: splashBreath 4.6s ease-in-out infinite 0.18s;
+  animation: splashIn 0.35s ease 0.05s both;
 }
 .splash-gate.is-leaving {
   pointer-events: none;
   opacity: 0;
-  transition: opacity 280ms ease;
+  transition: opacity 180ms ease;
 }
-@keyframes splashBreath {
-  0%, 100% { opacity: 0.92; }
-  50% { opacity: 1; }
-}
-@keyframes splashGlow {
-  0%, 100% { opacity: 0.45; }
-  50% { opacity: 0.9; }
+@keyframes splashIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
 
 .explore-sheet {
   z-index: 1100;
   border-radius: 28px 28px 0 0;
   box-shadow: 0 -18px 50px -20px rgba(15, 23, 42, 0.28);
+  will-change: transform;
+  backface-visibility: hidden;
 }
 .explore-sheet.is-peek {
   border-radius: 0;
@@ -265,8 +275,50 @@
   transition: bottom 280ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.notice-pop {
+  transform-origin: top right;
+  animation: noticeIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.notice-pop.is-closing {
+  animation: noticeOut 240ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  pointer-events: none;
+}
+.notice-pop-item {
+  animation: noticeItem 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.notice-bell-live {
+  transform-origin: top center;
+  animation: noticeBell 560ms ease;
+}
+@keyframes noticeIn {
+  from { opacity: 0; transform: translateY(-10px) scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes noticeOut {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(-8px) scale(0.96); }
+}
+@keyframes noticeItem {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes noticeBell {
+  0% { transform: rotate(0); }
+  18% { transform: rotate(16deg); }
+  36% { transform: rotate(-14deg); }
+  54% { transform: rotate(9deg); }
+  72% { transform: rotate(-5deg); }
+  100% { transform: rotate(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice-pop,
+  .notice-pop-item,
+  .notice-bell-live { animation: none; }
+}
+
 .story-nudge {
   animation: storyNudge 2.4s ease-in-out infinite;
+  transition: opacity 700ms ease-in-out;
 }
 @keyframes storyNudge {
   0%, 100% { transform: translateY(-50%) translateX(0); }

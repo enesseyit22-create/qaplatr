@@ -1,6 +1,5 @@
-import { useEffect } from 'react';
-import type { Merchant, OfferWithMerchant } from '@/lib/supabase';
-import { MapZoomControls } from '@/components/MapZoomControls';
+import { memo, useEffect, useRef } from 'react';
+import type { OfferWithMerchant } from '@/lib/supabase';
 import { MerchantPinLayer, UserPulseMarker } from '@/components/DropletOverlay';
 import { invalidateMapSize, useQaplaMap } from '@/components/maps/MapContext';
 import { setActiveMapEngine } from '@/lib/mapControl';
@@ -10,41 +9,30 @@ import { ISTANBUL_CENTER } from '@/lib/mapTiles';
 import { QaplaMapFrame, type MapFlyTo } from '@/components/maps/QaplaMapFrame';
 
 type ExploreMapProps = {
-  merchants: Merchant[];
   offers?: OfferWithMerchant[];
   userAddress: SavedAddress | null;
   sheetOffset: number;
-  locating?: boolean;
   gesturesLocked?: boolean;
-  locateBottom?: number;
-  controlsHidden?: boolean;
   flyTo?: MapFlyTo | null;
   onPickLocation: (lat: number, lng: number) => void;
-  onRequestLocation?: () => void;
-  onSelectMerchant?: (merchant: Merchant) => void;
   onInspectOffer?: (offer: OfferWithMerchant) => void;
+  onPreviewOffer?: (offer: OfferWithMerchant) => void;
 };
 
-export function ExploreMap({
-  merchants,
+export const ExploreMap = memo(function ExploreMap({
   offers = [],
   userAddress,
   sheetOffset,
-  locating = false,
   gesturesLocked = false,
-  locateBottom = 180,
-  controlsHidden = false,
   flyTo = null,
   onPickLocation,
-  onRequestLocation,
-  onSelectMerchant,
   onInspectOffer,
+  onPreviewOffer,
 }: ExploreMapProps) {
   const center = userAddress && hasValidCoords(userAddress)
     ? { lat: userAddress.latitude, lng: userAddress.longitude }
     : ISTANBUL_CENTER;
-
-  const pins = merchants.filter(hasValidCoords);
+  const skipPick = useRef(false);
 
   return (
     <div className={`explore-map absolute inset-0 z-[1] h-full w-full ${gesturesLocked ? 'is-sheet-dragging' : ''}`}>
@@ -57,24 +45,32 @@ export function ExploreMap({
         flyTo={flyTo}
         onClick={(lat, lng) => {
           if (gesturesLocked) return;
+          if (skipPick.current) {
+            skipPick.current = false;
+            return;
+          }
           onPickLocation(lat, lng);
         }}
       >
         <MapSizeSync sheetOffset={sheetOffset} />
         <UserPulseMarker lat={center.lat} lng={center.lng} label={userAddress?.label ?? 'Konum'} />
         <MerchantPinLayer
-          merchants={pins}
           offers={offers}
           sheetOffset={sheetOffset}
           origin={userAddress}
-          onSelectMerchant={onSelectMerchant}
           onInspectOffer={onInspectOffer}
+          onPreviewOffer={(offer) => {
+            skipPick.current = true;
+            window.setTimeout(() => {
+              skipPick.current = false;
+            }, 280);
+            onPreviewOffer?.(offer);
+          }}
         />
       </QaplaMapFrame>
-      <MapZoomControls locating={locating} bottom={locateBottom} hidden={controlsHidden} onLocate={onRequestLocation} />
     </div>
   );
-}
+});
 
 function MapSizeSync({ sheetOffset }: { sheetOffset: number }) {
   const map = useQaplaMap();

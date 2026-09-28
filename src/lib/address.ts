@@ -113,6 +113,35 @@ export async function searchNominatimMany(query: string, limit = 6): Promise<Sav
   }
 }
 
+export function formatDetailedAddress(parts: {
+  city: string;
+  district: string;
+  neighborhood: string;
+  street: string;
+  door: string;
+}) {
+  const door = parts.door.trim();
+  const street = [parts.street.trim(), door ? `No: ${door}` : ''].filter(Boolean).join(' ');
+  return [street, parts.neighborhood, parts.district, parts.city, 'Türkiye']
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+export async function geocodeDetailedAddress(parts: {
+  city: string;
+  district: string;
+  neighborhood: string;
+  street: string;
+  door: string;
+}): Promise<{ latitude: number; longitude: number } | null> {
+  const query = formatDetailedAddress(parts);
+  if (!parts.city.trim() || !parts.district.trim() || !parts.street.trim()) return null;
+  const found = await searchNominatim(query);
+  if (!found || !Number.isFinite(found.latitude) || !Number.isFinite(found.longitude)) return null;
+  return { latitude: found.latitude, longitude: found.longitude };
+}
+
 export async function searchNominatim(query: string): Promise<SavedAddress | null> {
   const rows = await searchNominatimMany(query, 1);
   if (!rows[0]) return null;

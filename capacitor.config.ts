@@ -20,6 +20,9 @@ const config: CapacitorConfig = {
   },
   plugins: {
     Geolocation: {},
+    PushNotifications: {
+      presentationOptions: ['badge', 'sound', 'alert'],
+    },
   },
 };
 

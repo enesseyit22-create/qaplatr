@@ -3,22 +3,30 @@ import { ChevronLeft, ChevronRight, MapPin, X } from 'lucide-react';
 import type { Story } from '@/lib/stories';
 import { markStorySeen } from '@/lib/stories';
 import { VipGoldMark } from '@/components/VipGoldMark';
+import { FirmName } from '@/components/VerifiedBadge';
 
 const HOLD_MS = 5200;
 
 export function StoryViewer({
   stories,
   startIndex = 0,
+  isVerified,
   onClose,
 }: {
   stories: Story[];
   startIndex?: number;
+  isVerified?: (companyId: string | null | undefined) => boolean;
   onClose: () => void;
 }) {
   const [index, setIndex] = useState(Math.min(startIndex, Math.max(0, stories.length - 1)));
   const [paused, setPaused] = useState(false);
   const start = useRef<{ x: number; y: number } | null>(null);
   const story = stories[index];
+
+  useEffect(() => {
+    if (!stories.length) return;
+    if (index > stories.length - 1) setIndex(stories.length - 1);
+  }, [index, stories.length]);
 
   useEffect(() => {
     if (!story || paused) return;
@@ -104,7 +112,7 @@ export function StoryViewer({
           <div className="flex min-w-0 items-center gap-2">
             {story.created_by === 'admin' ? <VipGoldMark className="h-11 w-11 shrink-0" /> : null}
             <div className="min-w-0">
-              <p className="truncate text-sm font-extrabold text-white">{story.company_name}</p>
+              <FirmName name={story.company_name} verified={isVerified?.(story.company_id)} tone="onDark" className="text-sm font-extrabold text-white" />
               {story.created_by === 'admin' ? null : (
                 <p className="text-[11px] text-white/70">Firma hikayesi</p>
               )}

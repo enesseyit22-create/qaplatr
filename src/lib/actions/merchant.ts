@@ -1,10 +1,11 @@
-import { listAdminCampaigns, listAdminCompanies, updateCampaignAction, deleteCampaignAction } from '@/lib/actions/admin';
+import { listAdminCampaigns, listAdminCompanies, updateCampaignAction, deleteCampaignAction, createCampaignAction } from '@/lib/actions/admin';
 import { readAllLocalRedemptions, upsertLocalCampaign, upsertLocalCompany } from '@/lib/adminStore';
 import { loadMyProfile, type AppProfile } from '@/lib/auth';
-import { loadBusinessForUser } from '@/lib/businesses';
 import type { Campaign, Company, UserRedemption } from '@/lib/campaigns';
-import { campaignsCreatedToday, FREE_DAILY_CAMPAIGN_LIMIT } from '@/lib/campaigns';
+import { planLimits, planTierOf } from '@/lib/plans';
+import { campaignsCreatedToday } from '@/lib/campaigns';
 import { requestPushDispatch } from '@/lib/companyPush';
+import { fetchCompanyByEmail, fetchCompanyById } from '@/lib/companyQuery';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { inspectCouponCode, approveCouponCode } from '@/lib/couponTickets';
 import { ISTANBUL_CENTER } from '@/lib/mapTiles';
@@ -24,7 +25,18 @@ function emailMatchesCompany(company: Company, email: string) {
   );
 }
 
+const ACTIVE_COMPANY_KEY = 'qapla_active_company_id';
+
 let merchantSession: AppProfile | null = null;
+
+export function rememberActiveCompany(id: string | null | undefined) {
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id)) return;
+  localStorage.setItem(ACTIVE_COMPANY_KEY, id);
+}
+
+export function readActiveCompanyId() {
+  return localStorage.getItem(ACTIVE_COMPANY_KEY) ?? '';
+}
 
 export function bindMerchantSession(profile: AppProfile | null) {
   merchantSession = profile?.role === 'merchant' || profile?.role === 'admin' ? profile : null;
@@ -35,22 +47,35 @@ export async function fetchMerchantCompany(session?: AppProfile | null): Promise
     const profile = session ?? merchantSession ?? await loadMyProfile();
     if (profile && profile.role !== 'merchant' && profile.role !== 'admin') return null;
 
-    if (profile) {
-      const application = await loadBusinessForUser(profile.id, profile.email);
-      if (application && application.status !== 'approved') return null;
+    const email = (profile?.email ?? '').trim().toLowerCase();
+    if (isSupabaseConfigured) {
+      const byId = profile?.company_id ? await fetchCompanyById(profile.company_id) : null;
+      const byEmail = !byId && email ? await fetchCompanyByEmail(email) : null;
+      const resolved = byId ?? byEmail;
+      if (resolved?.id) {
+        rememberActiveCompany(resolved.id);
+        return resolved;
+      }
     }
 
     const companies = await listAdminCompanies().catch(() => [] as Company[]);
     if (profile?.company_id) {
       const owned = companies.find((item) => item.id === profile.company_id);
-      if (owned) return owned;
+      if (owned) {
+        rememberActiveCompany(owned.id);
+        return owned;
+      }
     }
-
-    const email = (profile?.email ?? '').trim().toLowerCase();
     if (email) {
       const byEmail = companies.find((item) => emailMatchesCompany(item, email));
-      if (byEmail) return byEmail;
+      if (byEmail) {
+        rememberActiveCompany(byEmail.id);
+        return byEmail;
+      }
     }
+    const savedId = readActiveCompanyId();
+    const saved = savedId ? companies.find((item) => item.id === savedId) : undefined;
+    if (saved) return saved;
 
     if (profile?.role === 'merchant') {
       const local: Company = {
@@ -70,6 +95,7 @@ export async function fetchMerchantCompany(session?: AppProfile | null): Promise
         created_at: profile.created_at ?? new Date().toISOString(),
       };
       upsertLocalCompany(local);
+      rememberActiveCompany(local.id);
       return local;
     }
 
@@ -79,24 +105,46 @@ export async function fetchMerchantCompany(session?: AppProfile | null): Promise
   }
 }
 
+const CAMPAIGN_COLUMNS = 'id,company_id,title,discount_rate,expiry_date,details,is_active,image_url,duration_type,duration_hours,stock,created_at';
+
 export async function listMerchantCampaigns(companyId: string): Promise<Campaign[]> {
-  const owned = await fetchMerchantCompany();
-  if (!owned || owned.id !== companyId) return [];
-  const all = await listAdminCampaigns();
-  return all.filter((item) => item.company_id === companyId);
+  if (!companyId) return [];
+  if (!isSupabaseConfigured) {
+    const all = await listAdminCampaigns();
+    return all.filter((item) => item.company_id === companyId);
+  }
+  const remote = await supabase
+    .from('campaigns')
+    .select(CAMPAIGN_COLUMNS)
+    .eq('company_id', companyId)
+    .order('created_at', { ascending: false });
+  if (remote.error) {
+    const all = await listAdminCampaigns();
+    return all.filter((item) => item.company_id === companyId);
+  }
+  return ((remote.data ?? []) as Campaign[]).map((row) => ({ ...row, details: row.details ?? '' }));
 }
 
-export async function listMerchantRedemptions(companyId: string): Promise<UserRedemption[]> {
-  const campaigns = await listMerchantCampaigns(companyId);
-  const ids = new Set(campaigns.map((item) => item.id));
+export async function listMerchantRedemptions(companyId: string, knownIds?: string[]): Promise<UserRedemption[]> {
+  const ids = knownIds ?? (await listMerchantCampaigns(companyId)).map((item) => item.id);
+  const idSet = new Set(ids);
+  if (isSupabaseConfigured && ids.length) {
+    const remote = await supabase
+      .from('user_redemptions')
+      .select('id,user_id,campaign_id,redeemed_at')
+      .in('campaign_id', ids)
+      .order('redeemed_at', { ascending: false })
+      .limit(40);
+    if (!remote.error && remote.data) return remote.data as UserRedemption[];
+  }
   return readAllLocalRedemptions()
-    .filter((row) => ids.has(row.campaign_id))
+    .filter((row) => idSet.has(row.campaign_id))
     .sort((a, b) => new Date(b.redeemed_at).getTime() - new Date(a.redeemed_at).getTime());
 }
 
 export async function merchantStats(companyId: string): Promise<MerchantStats> {
   const campaigns = await listMerchantCampaigns(companyId);
-  const redemptions = await listMerchantRedemptions(companyId);
+  const redemptions = await listMerchantRedemptions(companyId, campaigns.map((item) => item.id));
   const today = new Date().toISOString().slice(0, 10);
   return {
     campaigns: campaigns.length,
@@ -134,26 +182,25 @@ export async function createMerchantCampaignAction(input: {
       .gte('created_at', start.toISOString());
     if (!error && typeof count === 'number') todayCount = count;
   }
-  if (todayCount >= FREE_DAILY_CAMPAIGN_LIMIT) {
-    throw new Error('VIP olmadan günde yalnızca 1 kampanya eklenebilir. Hakkın doldu.');
+  const dailyLimit = planLimits(planTierOf(owned)).dailyCampaigns;
+  if (todayCount >= dailyLimit) {
+    throw new Error(dailyLimit <= 1
+      ? 'Standart pakette günde 1 kampanya eklenebilir. Hakkın doldu.'
+      : `Premium pakette günde ${dailyLimit} kampanya eklenebilir. Hakkın doldu.`);
   }
 
-  const row: Campaign = {
-    id: crypto.randomUUID(),
+  return createCampaignAction({
     company_id: owned.id,
     title: input.title.trim(),
     discount_rate: input.discount_rate,
     expiry_date: input.expiry_date,
     details: input.details.trim(),
     is_active: input.is_active ?? true,
-    created_at: new Date().toISOString(),
     image_url: input.image_url ?? null,
     duration_type: input.duration_type ?? 'date',
     duration_hours: input.duration_hours ?? null,
     stock: Math.max(0, Math.floor(Number(input.stock ?? 1))),
-  };
-  upsertLocalCampaign(row);
-  return row;
+  });
 }
 
 export async function updateMerchantCampaignAction(input: {
@@ -192,7 +239,8 @@ export async function setMerchantCampaignActive(campaignId: string, isActive: bo
 
   const next = { ...current, is_active: isActive };
   if (isSupabaseConfigured && !campaignId.startsWith('demo-')) {
-    await supabase.from('campaigns').update({ is_active: isActive }).eq('id', campaignId).eq('company_id', owned.id);
+    const saved = await supabase.from('campaigns').update({ is_active: isActive }).eq('id', campaignId).eq('company_id', owned.id);
+    if (saved.error) throw new Error(saved.error.message || 'Kampanya durumu güncellenemedi.');
     if (isActive) void requestPushDispatch();
   }
   upsertLocalCampaign(next);
@@ -249,8 +297,7 @@ export async function updateMerchantProfileAction(input: {
     cover_url: input.cover_url === undefined ? owned.cover_url : input.cover_url,
   };
   if (isSupabaseConfigured && !owned.id.startsWith('demo-') && !owned.id.startsWith('merchant-')) {
-    try {
-      await supabase.from('companies').update({
+    const saved = await supabase.from('companies').update({
         name: next.name,
         category: next.category,
         address: next.address,
@@ -262,10 +309,11 @@ export async function updateMerchantProfileAction(input: {
         logo_url: next.logo_url,
         cover_url: next.cover_url,
         whatsapp: next.whatsapp ?? '',
-      }).eq('id', owned.id);
-    } catch {
-      // local profile still updates if remote schema lags
-    }
+      }).eq('id', owned.id).select('id,logo_url,cover_url').maybeSingle();
+      if (saved.error) {
+        console.warn('Firma profili güncellenemedi', saved.error);
+        throw new Error(saved.error.message || 'Profil kaydedilemedi.');
+      }
   }
   upsertLocalCompany(next);
   return next;

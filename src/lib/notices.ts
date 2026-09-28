@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/authContext';
+import { requestPushDispatch } from '@/lib/companyPush';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { subscribeTables } from '@/lib/live';
 import type { ProfileRole } from '@/lib/auth';
@@ -8,7 +9,7 @@ import { campaignAlertsAllowed, useAppFeatures } from '@/lib/appFeatures';
 const KEY = 'qapla_app_notices';
 const EVENT = 'qapla-notices';
 
-export type NoticeAudience = 'all' | 'users' | 'merchants' | 'admin';
+export type NoticeAudience = 'all' | 'guests' | 'users' | 'merchants' | 'admin';
 
 export type AppNotice = {
   id: string;
@@ -63,6 +64,7 @@ export function noticeVisibleTo(
   if (isCampaignNotice(notice) && !campaignAlertsAllowed({ vip })) return false;
   if (role === 'admin') return true;
   if (notice.audience === 'all') return true;
+  if (notice.audience === 'guests') return !role;
   if (notice.audience === 'users') return role === 'user';
   if (notice.audience === 'merchants') {
     if (role !== 'merchant') return false;
@@ -73,7 +75,7 @@ export function noticeVisibleTo(
 }
 
 function asNotice(row: Record<string, unknown>): AppNotice {
-  const audience = row.audience === 'users' || row.audience === 'merchants' || row.audience === 'admin'
+  const audience = row.audience === 'guests' || row.audience === 'users' || row.audience === 'merchants' || row.audience === 'admin'
     ? row.audience
     : 'all';
   return {
@@ -121,32 +123,85 @@ export async function refreshAppNotices() {
   return rows;
 }
 
-export async function addAppNotice(input: Omit<AppNotice, 'id' | 'created_at'>) {
+export type PublishedNotice = AppNotice & { warning: string | null };
+
+async function saveNotificationRow(row: AppNotice) {
+  const { error } = await supabase.from('notifications').insert({
+    id: row.id,
+    title: row.title,
+    body: row.body,
+    audience: row.audience,
+    from_kind: row.from_kind,
+    from_name: row.from_name,
+    company_id: row.company_id ?? null,
+  });
+  if (error) console.error('notifications kaydı yazılamadı', error.message, error);
+}
+
+const SPLIT_AUDIENCES = ['guests', 'users', 'merchants'] as const satisfies readonly NoticeAudience[];
+
+function publishTargets(audience: NoticeAudience): NoticeAudience[] {
+  return audience === 'all' ? [...SPLIT_AUDIENCES] : [audience];
+}
+
+async function insertNotice(input: Omit<AppNotice, 'id' | 'created_at'>): Promise<AppNotice> {
+  const { data, error } = await supabase
+    .from('app_notices')
+    .insert({
+      title: input.title,
+      body: input.body,
+      from_kind: input.from_kind,
+      from_name: input.from_name,
+      audience: input.audience,
+      company_id: input.company_id ?? null,
+    })
+    .select('id,title,body,from_kind,from_name,audience,company_id,created_at')
+    .single();
+  if (error) throw error;
+  const row = asNotice(data as Record<string, unknown>);
+  writeRaw([row, ...readRaw().filter((item) => item.id !== row.id)]);
+  await saveNotificationRow(row);
+  const queued = await supabase.rpc('enqueue_admin_notice_push', { p_notice: row.id });
+  if (queued.error) console.error('Bildirim kuyruğa yazılamadı', queued.error.message, queued.error);
+  console.log('Bildirim ayrı kuyruğa alındı', { audience: row.audience, noticeId: row.id });
+  return row;
+}
+
+export async function addAppNotice(input: Omit<AppNotice, 'id' | 'created_at'>): Promise<PublishedNotice> {
+  const targets = publishTargets(input.audience);
   if (isSupabaseConfigured) {
-    const { data, error } = await supabase
-      .from('app_notices')
-      .insert({
-        title: input.title,
-        body: input.body,
-        from_kind: input.from_kind,
-        from_name: input.from_name,
-        audience: input.audience,
-        company_id: input.company_id ?? null,
-      })
-      .select('id,title,body,from_kind,from_name,audience,company_id,created_at')
-      .single();
-    if (error) throw error;
-    const row = asNotice(data as Record<string, unknown>);
-    writeRaw([row, ...readRaw().filter((item) => item.id !== row.id)]);
-    return row;
+    const rows: AppNotice[] = [];
+    for (const audience of targets) {
+      rows.push(await insertNotice({ ...input, audience }));
+    }
+    const row = rows[0];
+    try {
+      const push = await requestPushDispatch();
+      if (!push.ok) {
+        console.error('Yönetim bildirimi push iletilemedi', {
+          audiences: targets,
+          noticeId: row.id,
+          message: push.message,
+          sent: push.sent,
+          targets: push.targets,
+          queued: push.queued,
+        });
+        return { ...row, warning: push.message || 'Bildirim kaydedildi. Anlık push şu an ulaşılamıyor.' };
+      }
+      return { ...row, warning: null };
+    } catch (pushError) {
+      console.error('Yönetim bildirimi push iletilemedi', pushError);
+      return { ...row, warning: 'Bildirim kaydedildi. Anlık push şu an ulaşılamıyor.' };
+    }
   }
-  const row: AppNotice = {
+  const rows = targets.map((audience) => ({
     ...input,
+    audience,
     id: crypto.randomUUID(),
     created_at: new Date().toISOString(),
-  };
-  writeRaw([row, ...readRaw()]);
-  return row;
+  }));
+  writeRaw([...rows, ...readRaw()]);
+  return { ...rows[0], warning: null };
 }
 
 export async function updateAppNotice(id: string, input: Partial<Pick<AppNotice, 'title' | 'body' | 'audience' | 'from_name' | 'from_kind' | 'company_id'>>) {

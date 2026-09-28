@@ -1,6 +1,7 @@
 import { BarChart3, Building2, Ticket, Users } from 'lucide-react';
 import type { AppUser, Campaign, Company, UserRedemption } from '@/lib/campaigns';
 import { CampaignMiniList } from '@/components/CampaignMiniList';
+import { VerifiedBadge } from '@/components/VerifiedBadge';
 
 function asReportList<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
@@ -49,7 +50,7 @@ export function AdminReportsPanel({
             <div key={company.id} className="rounded-2xl border border-mint-50 bg-cream-50 p-3">
               <div className="flex items-center justify-between gap-2 text-sm">
                 <div>
-                  <p className="font-bold text-mint-900">{company.name}</p>
+                  <p className="inline-flex items-center gap-1 font-bold text-mint-900">{company.name}<VerifiedBadge verified={company.is_verified} /></p>
                   <p className="text-[11px] text-gray-400">{owned.length} kampanya · {uses} kullanım</p>
                 </div>
               </div>

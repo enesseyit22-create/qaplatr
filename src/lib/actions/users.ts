@@ -10,6 +10,13 @@ import {
 import type { AppUser, AppUserRole, UserRedemption } from '@/lib/campaigns';
 import { joinFullName } from '@/lib/auth';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
+import { asUuid } from '@/lib/uuid';
+
+const USER_SQL_HINT = 'Kullanıcı fonksiyonları eski. SQL Editor’da 20260928240000_uuid_user_ids_story_fk.sql dosyasını çalıştırın.';
+
+function userRpcError(error: { code?: string; message: string }) {
+  return new Error(error.code === '42883' ? USER_SQL_HINT : error.message);
+}
 
 export type ProfileInput = {
   id?: string;
@@ -50,6 +57,7 @@ export async function listAdminUsers(): Promise<AppUser[]> {
         full_name: row.full_name ?? null,
         role: (row.role as AppUserRole) || 'user',
         company_id: row.company_id ?? null,
+        vip: Boolean((row as AppUser).vip),
         city: row.city ?? null,
       }));
     } else {
@@ -62,8 +70,9 @@ export async function listAdminUsers(): Promise<AppUser[]> {
           last_name: row.last_name ?? null,
           full_name: row.full_name ?? null,
           role: (row.role as AppUserRole) || 'user',
-          company_id: row.company_id ?? null,
-          city: (row as AppUser).city ?? null,
+        company_id: row.company_id ?? null,
+        vip: Boolean((row as AppUser).vip),
+        city: (row as AppUser).city ?? null,
         }));
       }
     }
@@ -100,13 +109,18 @@ export async function upsertAdminUser(input: ProfileInput): Promise<AppUser> {
   }
 
   if (isSupabaseConfigured) {
+    const companyId = input.company_id ? asUuid(input.company_id) : null;
+    if (input.company_id && !companyId) throw new Error('Firma kaydı bulunamadı.');
     const { data, error } = await supabase.rpc('admin_upsert_profile', {
-      p_id: input.id ?? existing?.id ?? null,
+      p_id: asUuid(input.id ?? existing?.id),
       p_email: input.email,
       p_phone: input.phone,
       p_role: input.role,
-      p_company_id: input.company_id ?? null,
+      p_company_id: companyId,
     });
+    if (error && !/admin_upsert_profile|schema cache/i.test(error.message)) {
+      throw userRpcError(error);
+    }
     if (!error && data) {
       const row = data as AppUser;
       const saved = {
@@ -137,10 +151,10 @@ export async function upsertAdminUser(input: ProfileInput): Promise<AppUser> {
 }
 
 export async function deleteAdminUser(id: string): Promise<void> {
-  if (isSupabaseConfigured) {
-    await supabase.rpc('admin_delete_profile', {
-      p_id: id,
-    });
+  const profileId = asUuid(id);
+  if (isSupabaseConfigured && profileId) {
+    const deleted = await supabase.rpc('admin_delete_profile', { p_id: profileId });
+    if (deleted.error) throw userRpcError(deleted.error);
   }
   removeLocalUser(id);
 }

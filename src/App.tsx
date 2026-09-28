@@ -4,30 +4,30 @@ import {
   Check, User, Sparkles, Coffee, Utensils, Dumbbell,
   Scissors, AlertCircle, Loader2, ShoppingBag, Shirt,
   Trash2, RotateCcw, Ban, Navigation, MapPin, Palette, Music,
-  GalleryHorizontal, List, Heart, Bookmark, Settings,
+  Heart, Bookmark, Settings,
 } from 'lucide-react';
 import { isSupabaseConfigured, type Merchant, type OfferWithMerchant, type CouponClaim } from '@/lib/supabase';
 import {
   getConsumerId, generateCouponCode, formatTimeRemaining, getMsRemaining,
 } from '@/lib/utils';
 import {
-  DEMO_MERCHANTS, DEMO_OFFERS, readLocalClaims, writeLocalClaim,
+  readLocalClaims, writeLocalClaim,
   cancelLocalClaim, deleteLocalClaim, restoreLocalClaim,
 } from '@/lib/demoData';
-import { saveCouponTicket } from '@/lib/couponTickets';
+import { readCouponTicketStatus, saveCouponTicket, setCouponTicketStatus } from '@/lib/couponTickets';
 import { ExploreTabIcon } from '@/components/ExploreTabIcon';
 import { SplashScreen } from '@/components/SplashScreen';
 import { ExploreMap } from '@/components/ExploreMap';
-import { ExploreSheet, EXPLORE_NAV_CLEARANCE, SHEET_PEEK } from '@/components/ExploreSheet';
+import { MapZoomControls } from '@/components/MapZoomControls';
+import { ExploreSheet, EXPLORE_NAV_CLEARANCE, SHEET_PEEK, type ExploreFeedId } from '@/components/ExploreSheet';
 import { ExploreTopBar } from '@/components/ExploreTopBar';
 import { MapPlaceCard } from '@/components/MapPlaceCard';
+import { FirmName } from '@/components/VerifiedBadge';
+import { useReach } from '@/lib/reach';
 import { SideMenu } from '@/components/SideMenu';
 import { TabPageShell, tabPrimary } from '@/components/TabPageShell';
-import { SavedPlacesScreen, ProfileTabScreen } from '@/components/SavedPlacesScreen';
-import { VipSoonScreen } from '@/components/VipSoonScreen';
 import { QapLaMark } from '@/components/QapLaMark';
 import { useAppFeatures } from '@/lib/appFeatures';
-import { UserRegister } from '@/pages/UserRegister';
 import { AuthProvider, useAuth } from '@/lib/authContext';
 import type { MerchantTab } from '@/components/MerchantPanel';
 import { ErrorToastHost } from '@/components/ErrorToast';
@@ -54,13 +54,16 @@ import {
   writeSavedAddress,
   type SavedAddress,
 } from '@/lib/address';
-import { locationHint, requestDeviceLocation, type LocationFailure } from '@/lib/location';
-import { hasValidCoords } from '@/lib/geo';
+import { requestPushDispatch } from '@/lib/companyPush';
+import { rememberDeviceArea } from '@/lib/devicePush';
+import { locationHint, noteLocationAnchor, requestDeviceLocation, watchSignificantMoves, type LocationFailure } from '@/lib/location';
+import { distanceMeters, hasValidCoords } from '@/lib/geo';
 import { visibleMapItems } from '@/lib/mapVisibility';
 import { nearbyStories, readSeenStoryIds, useLiveStories } from '@/lib/stories';
 import { subscribeTables } from '@/lib/live';
+import { applyCampaignOffers, applyCompanyToCatalog, subscribeCampaignTable } from '@/lib/campaignLive';
 import { listFavoriteIds } from '@/lib/favorites';
-import { matchesSector, sectorIdForCategory, type ExploreCategoryId } from '@/lib/sectors';
+import { matchesExploreFeed, matchesSector, type ExploreCategoryId } from '@/lib/sectors';
 import { ISTANBUL_CENTER } from '@/lib/mapTiles';
 import type { MapFlyTo } from '@/components/maps/QaplaMapFrame';
 
@@ -74,6 +77,10 @@ const BusinessRegisterPage = lazy(() => import('@/pages/BusinessRegister').then(
 const BusinessPendingScreen = lazy(() => import('@/components/BusinessPendingScreen').then((m) => ({ default: m.BusinessPendingScreen })));
 const BusinessProfile = lazy(() => import('@/pages/BusinessProfile').then((m) => ({ default: m.BusinessProfile })));
 const StoryViewer = lazy(() => import('@/components/StoryViewer').then((m) => ({ default: m.StoryViewer })));
+const SavedPlacesScreen = lazy(() => import('@/components/SavedPlacesScreen').then((m) => ({ default: m.SavedPlacesScreen })));
+const ProfileTabScreen = lazy(() => import('@/components/SavedPlacesScreen').then((m) => ({ default: m.ProfileTabScreen })));
+const VipSoonScreen = lazy(() => import('@/components/VipSoonScreen').then((m) => ({ default: m.VipSoonScreen })));
+const UserRegister = lazy(() => import('@/pages/UserRegister').then((m) => ({ default: m.UserRegister })));
 
 function TabFallback() {
   return (
@@ -130,71 +137,20 @@ function matchesExploreCategory(
   return true;
 }
 
-const FAIR_ROTATION_MS = 3 * 60 * 1000;
+function offerMeters(offer: OfferWithMerchant, origin: { latitude: number; longitude: number } | null) {
+  const place = offer.qapla_merchants;
+  if (!origin || !place || !hasValidCoords(place)) return Number.POSITIVE_INFINITY;
+  return distanceMeters(origin.latitude, origin.longitude, place.latitude, place.longitude);
+}
 
-function pickFairRotatedOffers(offers: OfferWithMerchant[], now: number): OfferWithMerchant[] {
-  const byMerchant = new Map<string, OfferWithMerchant[]>();
-  for (const offer of offers) {
-    const merchantId = offer.merchant_id || offer.qapla_merchants?.id;
-    if (!merchantId) continue;
-    const list = byMerchant.get(merchantId) ?? [];
-    list.push(offer);
-    byMerchant.set(merchantId, list);
-  }
-  const merchantIds = [...byMerchant.keys()].sort((a, b) => a.localeCompare(b));
-  if (merchantIds.length === 0) return [];
-  const bucket = Math.floor(now / FAIR_ROTATION_MS);
-  const offset = bucket % merchantIds.length;
-  const rotated = [...merchantIds.slice(offset), ...merchantIds.slice(0, offset)];
-  return rotated.map((id) => {
-    const list = [...(byMerchant.get(id) ?? [])].sort((a, b) => a.id.localeCompare(b.id));
-    return list[bucket % list.length];
+function matchesFeed(feed: ExploreFeedId, offer: OfferWithMerchant) {
+  const merchant = offer.qapla_merchants;
+  return matchesExploreFeed(feed, {
+    category: `${offer.category ?? ''} ${merchant?.category ?? ''}`,
+    title: offer.title,
+    featured: Boolean(offer.is_featured || merchant?.is_featured),
+    expiresSoon: getMsRemaining(offer.expires_at) > 0 && getMsRemaining(offer.expires_at) < 6 * 3600000,
   });
-}
-
-type SectorGroupId = ExploreCategoryId | 'giyim' | 'market';
-
-const SECTOR_GROUP_ORDER: { id: SectorGroupId; label: string }[] = [
-  { id: 'restoran', label: 'Kafe & Restoran' },
-  { id: 'giyim', label: 'Giyim' },
-  { id: 'guzellik', label: 'Güzellik' },
-  { id: 'spor', label: 'Spor' },
-  { id: 'eglence', label: 'Eğlence' },
-  { id: 'dekorasyon', label: 'Dekorasyon' },
-  { id: 'market', label: 'Market' },
-  { id: 'esnaf', label: 'Yerel Esnaf' },
-];
-
-function sectorGroupForOffer(offer: OfferWithMerchant): { id: SectorGroupId; label: string } {
-  const haystack = `${offer.category} ${offer.qapla_merchants?.category ?? ''}`;
-  const value = haystack.toLocaleLowerCase('tr');
-  if (value.includes('giyim') || value.includes('kıyafet') || value.includes('kiyafet')) {
-    return { id: 'giyim', label: 'Giyim' };
-  }
-  if (value.includes('market') || value.includes('ticaret')) {
-    return { id: 'market', label: 'Market' };
-  }
-  const sector = sectorIdForCategory(haystack);
-  const id: SectorGroupId = sector === 'firsat' ? 'esnaf' : sector;
-  const meta = SECTOR_GROUP_ORDER.find((item) => item.id === id) ?? SECTOR_GROUP_ORDER[SECTOR_GROUP_ORDER.length - 1];
-  return meta;
-}
-
-function groupOffersBySector(offers: OfferWithMerchant[], now: number) {
-  const buckets = new Map<SectorGroupId, OfferWithMerchant[]>();
-  for (const offer of offers) {
-    const group = sectorGroupForOffer(offer);
-    const list = buckets.get(group.id) ?? [];
-    list.push(offer);
-    buckets.set(group.id, list);
-  }
-  return SECTOR_GROUP_ORDER
-    .filter((meta) => (buckets.get(meta.id) ?? []).length > 0)
-    .map((meta) => ({
-      id: meta.id,
-      label: meta.label,
-      offers: pickFairRotatedOffers(buckets.get(meta.id) ?? [], now),
-    }));
 }
 
 export default function App() {
@@ -206,6 +162,7 @@ export default function App() {
 }
 
 function AppShell() {
+  useReach();
   const { user, profile, businessApplication, loading: authLoading, signOut } = useAuth();
   const [screen, setScreen] = useState<Screen>('home');
   const [activeTab, setActiveTab] = useState<Tab>('home');
@@ -213,7 +170,13 @@ function AppShell() {
   const [selectedMerchant, setSelectedMerchant] = useState<Merchant | null>(null);
   const [activeCoupon, setActiveCoupon] = useState<CouponClaim | null>(null);
   const [merchants, setMerchants] = useState<Merchant[]>([]);
+  const merchantsRef = useRef(merchants);
+  merchantsRef.current = merchants;
   const [offers, setOffers] = useState<OfferWithMerchant[]>([]);
+  const offersRef = useRef(offers);
+  offersRef.current = offers;
+  const catalogGen = useRef(0);
+  const catalogReady = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showSplash, setShowSplash] = useState(true);
@@ -290,6 +253,7 @@ function AppShell() {
     if (previous === 'coupons') setActiveTab('visits');
     if (previous === 'saved') setActiveTab('saved');
     if (previous === 'profile') setActiveTab('profile');
+    if (previous === 'settings') setActiveTab('settings');
     if (previous === 'vip') setActiveTab('vip');
     if (previous === 'admin') setActiveTab('admin');
     if (previous === 'merchant') setActiveTab('merchant');
@@ -357,6 +321,7 @@ function AppShell() {
   };
 
   const loadData = useCallback(async (silent = false) => {
+    const ticket = ++catalogGen.current;
     if (!silent) setLoading(true);
     setError(null);
     try {
@@ -364,26 +329,56 @@ function AppShell() {
         listCompaniesAction(),
         listCampaignsAction(),
       ]);
-      const extraOffers = campaigns.map(campaignToOffer);
-      const extraMerchants = companies.map(companyToMerchant).filter(hasValidCoords);
-      const byId = <T extends { id: string }>(base: T[], extra: T[]) => {
-        const map = new Map(base.map((item) => [item.id, item]));
-        for (const item of extra) map.set(item.id, item);
-        return [...map.values()];
-      };
-      setMerchants(byId(DEMO_MERCHANTS, extraMerchants));
-      setOffers(byId(DEMO_OFFERS, extraOffers));
+      if (ticket !== catalogGen.current) return;
+      catalogReady.current = true;
+      setOffers(campaigns.map(campaignToOffer).filter((item) => item.id && !item.id.startsWith('demo-')));
+      setMerchants(companies.map(companyToMerchant).filter((item) => hasValidCoords(item) && !item.id.startsWith('demo-')));
     } catch (err) {
-      setMerchants(DEMO_MERCHANTS);
-      setOffers(DEMO_OFFERS);
-      setError(err instanceof Error ? err.message : 'Veriler yüklenemedi, örnek veriler gösteriliyor');
+      if (ticket !== catalogGen.current) return;
+      setMerchants([]);
+      setOffers([]);
+      setError(err instanceof Error ? err.message : 'Harita verisi yüklenemedi');
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && ticket === catalogGen.current) setLoading(false);
     }
   }, []);
 
-  useEffect(() => { void loadData(); }, [loadData]);
-  useEffect(() => subscribeTables(['companies', 'campaigns'], () => { void loadData(true); }), [loadData]);
+  useEffect(() => {
+    if (showSplash) return;
+    void loadData();
+  }, [loadData, showSplash]);
+  useEffect(() => {
+    if (showSplash) return;
+    return subscribeTables(
+      ['companies', 'campaigns', 'coupon_tickets', 'user_redemptions'],
+      (change) => {
+        if (change?.table === 'companies') {
+          const next = applyCompanyToCatalog(merchantsRef.current, offersRef.current, {
+            eventType: change.eventType,
+            new: change.new,
+            old: change.old,
+          });
+          setMerchants(next.merchants);
+          setOffers(next.offers);
+        }
+        if (change?.table === 'campaigns' && change.eventType === 'DELETE') {
+          const id = String(change.old?.id ?? '');
+          if (id) setOffers((current) => current.filter((item) => item.id !== id));
+        }
+        void loadData(true);
+        void requestPushDispatch();
+      },
+    );
+  }, [loadData, showSplash]);
+
+  useEffect(() => {
+    if (showSplash) return;
+    return subscribeCampaignTable((change) => {
+      const id = String(change.row?.id ?? change.previous?.id ?? '');
+      console.log('Kampanya ekranı güncellendi', { event: change.eventType, id });
+      setOffers((current) => applyCampaignOffers(current, merchantsRef.current, change));
+    });
+  }, [showSplash]);
 
   const openOffer = (offer: OfferWithMerchant) => {
     setSelectedOffer(offer);
@@ -466,17 +461,44 @@ function AppShell() {
     window.requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
   }, [screen]);
 
+  useEffect(() => {
+    if (loading || screen !== 'company' || !selectedMerchant) return;
+    if (!catalogReady.current) return;
+    if (!merchants.some((item) => item.id === selectedMerchant.id)) {
+      setSelectedMerchant(null);
+      goTo('home', { reset: true });
+      return;
+    }
+    const live = merchants.find((item) => item.id === selectedMerchant.id);
+    if (live && (live.name !== selectedMerchant.name || live.address !== selectedMerchant.address || live.logo_url !== selectedMerchant.logo_url)) {
+      setSelectedMerchant(live);
+    }
+  }, [goTo, loading, merchants, screen, selectedMerchant]);
+
+  useEffect(() => {
+    if (loading || screen !== 'offer-detail' || !selectedOffer) return;
+    const live = offers.find((item) => item.id === selectedOffer.id);
+    if (!live) {
+      setSelectedOffer(null);
+      goTo('home', { reset: true });
+      return;
+    }
+    if (live.title !== selectedOffer.title || live.is_active !== selectedOffer.is_active || live.expires_at !== selectedOffer.expires_at) {
+      setSelectedOffer(live);
+    }
+  }, [goTo, loading, offers, screen, selectedOffer]);
+
   const adminChrome = screen === 'admin' || screen === 'admin-login';
 
   return (
     <div className={`h-full min-h-0 w-full flex justify-center overflow-hidden ${adminChrome ? 'bg-cream-100' : 'bg-cream-100'}`}>
-      <div className={`relative w-full max-w-[440px] h-full shadow-soft flex flex-col overflow-hidden ${adminChrome ? 'bg-[#eef3f1] text-mint-900' : 'bg-cream-50'}`}>
+      <div className={`relative h-full w-full max-w-none flex flex-col overflow-hidden ${adminChrome ? 'bg-[#eef3f1] text-mint-900' : 'bg-cream-50'}`}>
         {showSplash && (
           <SplashScreen onDone={dismissSplash} onSecretUnlock={openAdmin} />
         )}
-        <div className="relative flex-1 min-h-0 overflow-hidden">
+        <div className="app-tab-stage relative flex-1 min-h-0 overflow-hidden">
         <div className={screen === 'home' ? 'h-full min-h-0' : 'hidden'}>
-          <HomeScreen
+          {!showSplash && <HomeScreen
             merchants={merchants}
             offers={offers}
             loading={loading}
@@ -505,7 +527,7 @@ function AppShell() {
             }}
             onVisits={showCoupons}
             onSaved={showSaved}
-          />
+          />}
         </div>
         <Suspense fallback={<TabFallback />}>
         {screen === 'company' && selectedMerchant && (
@@ -660,6 +682,7 @@ function AppShell() {
             if (cornerTap()) openAdmin();
           }}
         />
+        <Suspense fallback={null}>
         <UserRegister
           open={authOpen && profile?.role !== 'admin'}
           onClose={() => {
@@ -682,6 +705,7 @@ function AppShell() {
             if (resume) setClaimTrigger((value) => value + 1);
           }}
         />
+        </Suspense>
         <ErrorToastHost />
       </div>
     </div>
@@ -715,21 +739,46 @@ const HomeScreen = memo(function HomeScreen({
 }) {
   const [address, setAddress] = useState<SavedAddress | null>(() => readSavedAddress() ?? KADIKOY_FALLBACK);
   const [sheetHeight, setSheetHeight] = useState(SHEET_PEEK);
-  const [rotationTick, setRotationTick] = useState(0);
   const [locating, setLocating] = useState(false);
   const [locationReason, setLocationReason] = useState<LocationFailure | null>(null);
   const [focusToken, setFocusToken] = useState(1);
   const [pinFly, setPinFly] = useState<MapFlyTo | null>(null);
   const [previewMerchant, setPreviewMerchant] = useState<Merchant | null>(null);
+  const [previewOffer, setPreviewOffer] = useState<OfferWithMerchant | null>(null);
   const [sheetCollapsed, setSheetCollapsed] = useState(true);
-  const [catalogView, setCatalogView] = useState<'rail' | 'list'>('rail');
+  const [feed, setFeed] = useState<ExploreFeedId>('all');
+  const [clock, setClock] = useState(0);
   const [storyOpen, setStoryOpen] = useState(false);
   const [sheetQuery, setSheetQuery] = useState('');
   const logoTap = useSecretTaps(5);
-  const manualLock = useRef(Boolean(readSavedAddress()));
+  const manualLock = useRef(false);
   const { user, profile } = useAuth();
   const liveStories = useLiveStories();
   const favoriteMerchants = merchants.filter((merchant) => user && listFavoriteIds(user.id).includes(merchant.id));
+
+  useEffect(() => {
+    if (!previewOffer) return;
+    const live = offers.find((item) => item.id === previewOffer.id);
+    if (!live) {
+      setPreviewOffer(null);
+      setPreviewMerchant(null);
+      return;
+    }
+    if (live !== previewOffer) setPreviewOffer(live);
+  }, [offers, previewOffer]);
+
+  useEffect(() => {
+    if (!previewMerchant || merchants.length === 0) return;
+    const live = merchants.find((item) => item.id === previewMerchant.id);
+    if (!live) {
+      setPreviewMerchant(null);
+      setPreviewOffer(null);
+      return;
+    }
+    if (live.name !== previewMerchant.name || live.address !== previewMerchant.address || live.logo_url !== previewMerchant.logo_url) {
+      setPreviewMerchant(live);
+    }
+  }, [merchants, previewMerchant]);
 
   const origin = address && hasValidCoords(address) ? address : null;
   const storyFeed = nearbyStories(origin, liveStories);
@@ -752,14 +801,17 @@ const HomeScreen = memo(function HomeScreen({
   });
   const campaignHits = (['esnaf', 'gelinlik', 'mobilya', 'restoran', 'firsat', 'guzellik', 'spor', 'dekorasyon', 'eglence'] as ExploreCategoryId[])
     .filter((id) => nearbyOffers.some((offer) => matchesExploreCategory(id, offer) && offerSearchHay(offer).includes(searchQ)));
-  const mapMerchants = nearbyMerchants;
-  const sectorGroups = useMemo(
-    () => groupOffersBySector(filteredOffers, Date.now()),
-    [filteredOffers, rotationTick],
-  );
+  const mapOffers = nearbyOffers.filter((offer) => {
+    const place = offer.qapla_merchants;
+    return Boolean(offer.is_active && place && hasValidCoords(place) && getMsRemaining(offer.expires_at) > 0);
+  });
+  const sheetOffers = useMemo(() => {
+    const base = searchQ ? filteredOffers : filteredOffers.filter((offer) => matchesFeed(feed, offer));
+    return [...base].sort((a, b) => offerMeters(a, origin) - offerMeters(b, origin) || a.id.localeCompare(b.id));
+  }, [feed, filteredOffers, origin, searchQ]);
 
   useEffect(() => {
-    const id = window.setInterval(() => setRotationTick((value) => value + 1), FAIR_ROTATION_MS);
+    const id = window.setInterval(() => setClock((value) => value + 1), 1000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -777,6 +829,7 @@ const HomeScreen = memo(function HomeScreen({
       };
       writeSavedAddress(next);
       setAddress(next);
+      void rememberDeviceArea(next.latitude, next.longitude);
       setLocationReason(null);
       if (source === 'gps') {
         setFocusToken((value) => value + 1);
@@ -803,6 +856,7 @@ const HomeScreen = memo(function HomeScreen({
         setAddress((current) => current ?? KADIKOY_FALLBACK);
         return;
       }
+      noteLocationAnchor({ latitude: result.latitude, longitude: result.longitude });
       await pickMapLocation(result.latitude, result.longitude, 'gps');
     } catch {
       if (!manualLock.current) setLocationReason('unavailable');
@@ -811,12 +865,41 @@ const HomeScreen = memo(function HomeScreen({
     }
   }, []);
 
+  const pickRef = useRef(pickMapLocation);
+  pickRef.current = pickMapLocation;
+
   useEffect(() => {
     if (!enableLocation) return;
-    void askDeviceLocation();
-  }, [askDeviceLocation, enableLocation]);
+    const saved = readSavedAddress();
+    if (saved && hasValidCoords(saved)) noteLocationAnchor(saved);
+    return watchSignificantMoves((coords) => {
+      if (manualLock.current) return;
+      void pickRef.current(coords.latitude, coords.longitude, 'gps');
+    }, (reason) => {
+      if (!manualLock.current) setLocationReason(reason);
+    });
+  }, [enableLocation]);
 
   const openMerchantPin = (merchant: Merchant) => {
+    const offer = offers.find((item) => item.merchant_id === merchant.id
+      || item.qapla_merchants?.id === merchant.id) ?? null;
+    setPreviewMerchant(merchant);
+    setPreviewOffer(offer);
+    setSheetCollapsed(true);
+    if (hasValidCoords(merchant)) {
+      setPinFly({
+        lat: merchant.latitude,
+        lng: merchant.longitude,
+        zoom: 16,
+        token: Date.now(),
+      });
+    }
+  };
+
+  const openPinCard = (offer: OfferWithMerchant) => {
+    const merchant = offer.qapla_merchants;
+    if (!merchant) return;
+    setPreviewOffer(offer);
     setPreviewMerchant(merchant);
     setSheetCollapsed(true);
     if (hasValidCoords(merchant)) {
@@ -834,14 +917,10 @@ const HomeScreen = memo(function HomeScreen({
   return (
     <div className="relative h-full min-h-0 flex-1 overflow-hidden bg-[#e7ecea]">
       <ExploreMap
-        merchants={mapMerchants}
-        offers={filteredOffers}
+        offers={mapOffers}
         userAddress={address}
         sheetOffset={overlayBottom}
-        locating={locating}
         gesturesLocked={false}
-        locateBottom={SHEET_PEEK + EXPLORE_NAV_CLEARANCE}
-        controlsHidden={!sheetCollapsed}
         flyTo={
           pinFly ?? (
             focusToken > 0 && address && hasValidCoords(address)
@@ -851,16 +930,18 @@ const HomeScreen = memo(function HomeScreen({
         }
         onPickLocation={(lat, lng) => {
           setPreviewMerchant(null);
+          setPreviewOffer(null);
           void pickMapLocation(lat, lng, 'manual');
         }}
-        onRequestLocation={() => {
+        onPreviewOffer={openPinCard}
+      />
+
+      <MapZoomControls
+        locating={locating}
+        hidden={!sheetCollapsed}
+        onLocate={() => {
           manualLock.current = false;
           void askDeviceLocation();
-        }}
-        onSelectMerchant={openMerchantPin}
-        onInspectOffer={(offer) => {
-          setPreviewMerchant(null);
-          onOfferClick(offer);
         }}
       />
 
@@ -886,8 +967,10 @@ const HomeScreen = memo(function HomeScreen({
           manualLock.current = true;
           writeSavedAddress(next);
           setAddress(next);
+          void rememberDeviceArea(next.latitude, next.longitude);
           setLocationReason(null);
           setPreviewMerchant(null);
+          setPreviewOffer(null);
           setFocusToken((value) => value + 1);
         }}
       />
@@ -899,23 +982,23 @@ const HomeScreen = memo(function HomeScreen({
         >
           <MapPlaceCard
             merchant={previewMerchant}
-            offer={
-              offers.find((item) => item.merchant_id === previewMerchant.id
+            offer={previewOffer ?? offers.find((item) => item.merchant_id === previewMerchant.id
                 || item.qapla_merchants?.id === previewMerchant.id
-                || item.qapla_merchants?.name === previewMerchant.name) ?? null
-            }
+                || item.qapla_merchants?.name === previewMerchant.name) ?? null}
+            offers={offers.filter((item) => item.is_active && getMsRemaining(item.expires_at) > 0 && (item.merchant_id === previewMerchant.id || item.qapla_merchants?.id === previewMerchant.id))}
             origin={address}
-            onInspectCampaign={() => {
-              const selected = previewMerchant;
-              const offer = offers.find((item) => item.merchant_id === selected.id
-                || item.qapla_merchants?.id === selected.id
-                || item.qapla_merchants?.name === selected.name) ?? null;
+            onInspectCampaign={(picked) => {
+              const offer = picked ?? previewOffer ?? offers.find((item) => item.merchant_id === previewMerchant.id
+                || item.qapla_merchants?.id === previewMerchant.id
+                || item.qapla_merchants?.name === previewMerchant.name) ?? null;
               setPreviewMerchant(null);
+              setPreviewOffer(null);
               if (offer) onOfferClick(offer);
             }}
             onOpenProfile={() => {
               const selected = previewMerchant;
               setPreviewMerchant(null);
+              setPreviewOffer(null);
               onOpenCompany(selected);
             }}
           />
@@ -932,6 +1015,10 @@ const HomeScreen = memo(function HomeScreen({
         searchQuery={sheetQuery}
         onSearchQuery={setSheetQuery}
         campaignHits={searchQ ? campaignHits : []}
+        feed={feed}
+        onFeed={setFeed}
+        origin={origin}
+        places={nearbyMerchants.map((item) => ({ id: item.id, latitude: item.latitude, longitude: item.longitude }))}
       >
         {loading ? (
           <div className="flex flex-col items-center py-10">
@@ -946,47 +1033,24 @@ const HomeScreen = memo(function HomeScreen({
           </div>
         ) : (
           <>
-            {sectorGroups.length === 0 ? (
+            <div className="mb-2 mt-4 flex items-baseline justify-between px-0.5">
+              <h2 className="text-[15px] font-extrabold text-slate-800">Kampanya Akışı</h2>
+              <span className="text-[11px] font-semibold text-slate-400">{sheetOffers.length}</span>
+            </div>
+            {sheetOffers.length === 0 ? (
               <p className="py-6 text-center text-sm text-gray-400">
                 {searchQ ? 'Bu aramaya uyan kampanya yok.' : profile?.role === 'admin' ? 'Haritada kampanya yok.' : '2 km içinde bu kategoride kampanya yok.'}
               </p>
-            ) : catalogView === 'rail' ? (
-              <div className="space-y-4">
-                {sectorGroups.map((group) => (
-                  <section key={group.id} aria-label={group.label}>
-                    <div className="mb-2 flex items-baseline justify-between gap-2 px-0.5">
-                      <h2 className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-mint-700">{group.label}</h2>
-                      <span className="text-[10px] font-medium text-gray-400">{group.offers.length}</span>
-                    </div>
-                    <div className="-mx-4 flex snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain px-4 pb-0.5 no-scrollbar">
-                      {group.offers.map((offer) => (
-                        <CompactOfferCard
-                          key={offer.id}
-                          variant="tile"
-                          offer={offer}
-                          onClick={() => onOfferClick(offer)}
-                          onOpenCompany={() => {
-                            if (offer.qapla_merchants) onOpenCompany(offer.qapla_merchants);
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                ))}
-              </div>
             ) : (
-              <div className="space-y-5">
-                {sectorGroups.map((group) => (
-                  <section key={group.id} aria-label={group.label}>
-                    <div className="mb-2 flex items-baseline justify-between gap-2">
-                      <h2 className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-mint-700">{group.label}</h2>
-                      <span className="text-[10px] font-medium text-gray-400">{group.offers.length}</span>
-                    </div>
-                    <div className="space-y-2">
-                      {group.offers.map((offer) => (
+              <div className="grid grid-cols-2 gap-2">
+                {groupOffersByMerchant(sheetOffers).map((group, index) => (
+                  group.length > 1 ? (
+                    <div key={group[0].merchant_id} className="col-span-2 space-y-1.5">
+                      {group.map((offer) => (
                         <CompactOfferCard
                           key={offer.id}
                           variant="row"
+                          pulse={clock}
                           offer={offer}
                           onClick={() => onOfferClick(offer)}
                           onOpenCompany={() => {
@@ -995,36 +1059,22 @@ const HomeScreen = memo(function HomeScreen({
                         />
                       ))}
                     </div>
-                  </section>
+                  ) : (
+                    <CompactOfferCard
+                      key={group[0].id}
+                      variant="grid"
+                      tone={index}
+                      pulse={clock}
+                      offer={group[0]}
+                      onClick={() => onOfferClick(group[0])}
+                      onOpenCompany={() => {
+                        if (group[0].qapla_merchants) onOpenCompany(group[0].qapla_merchants);
+                      }}
+                    />
+                  )
                 ))}
               </div>
             )}
-            {sectorGroups.length > 0 ? (
-              <div className="sticky bottom-0 z-10 -mx-4 mt-4 border-t border-mint-50 bg-white/95 px-4 py-2 backdrop-blur-md">
-                <div className="flex rounded-full bg-cream-50 p-1">
-                  <button
-                    type="button"
-                    onClick={() => setCatalogView('rail')}
-                    className={`flex flex-1 items-center justify-center gap-1.5 rounded-full px-3 py-2 text-[11px] font-extrabold ${
-                      catalogView === 'rail' ? 'bg-white text-mint-800 shadow-soft' : 'text-gray-400'
-                    }`}
-                  >
-                    <GalleryHorizontal className="h-3.5 w-3.5" />
-                    Kampanyalar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCatalogView('list')}
-                    className={`flex flex-1 items-center justify-center gap-1.5 rounded-full px-3 py-2 text-[11px] font-extrabold ${
-                      catalogView === 'list' ? 'bg-white text-mint-800 shadow-soft' : 'text-gray-400'
-                    }`}
-                  >
-                    <List className="h-3.5 w-3.5" />
-                    Tüm sektörler
-                  </button>
-                </div>
-              </div>
-            ) : null}
           </>
         )}
       </ExploreSheet>
@@ -1032,6 +1082,7 @@ const HomeScreen = memo(function HomeScreen({
         <Suspense fallback={null}>
           <StoryViewer
             stories={storyFeed}
+            isVerified={(companyId) => Boolean(companyId && nearbyMerchants.some((item) => item.id === companyId && item.is_verified))}
             onClose={() => setStoryOpen(false)}
           />
         </Suspense>
@@ -1040,26 +1091,100 @@ const HomeScreen = memo(function HomeScreen({
   );
 });
 
+const GRID_TONES = [
+  'from-[#2f6fe0] to-[#5aa7ff]',
+  'from-[#2eaf6a] to-[#7dcea0]',
+  'from-[#f39c12] to-[#f6c56b]',
+  'from-[#3d8bfd] to-[#8ec5ff]',
+];
+
+function groupOffersByMerchant(offers: OfferWithMerchant[]) {
+  const groups: OfferWithMerchant[][] = [];
+  const index = new Map<string, number>();
+  for (const offer of offers) {
+    const id = offer.merchant_id || offer.qapla_merchants?.id || offer.id;
+    const at = index.get(id);
+    if (at == null) {
+      index.set(id, groups.length);
+      groups.push([offer]);
+    } else {
+      groups[at].push(offer);
+    }
+  }
+  return groups;
+}
+
+function sheetCountdown(expiresAt: string) {
+  const diff = new Date(expiresAt).getTime() - Date.now();
+  if (diff <= 0) return 'Süre doldu';
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  if (h > 0) return `${h}Sa ${m}d ${s}sn`;
+  return `${m}d ${s}sn`;
+}
+
 function CompactOfferCard({
   offer,
   onClick,
   onOpenCompany,
   variant = 'row',
+  tone = 0,
+  pulse,
 }: {
   offer: OfferWithMerchant;
   onClick: () => void;
   onOpenCompany: () => void;
-  variant?: 'tile' | 'row';
+  variant?: 'tile' | 'row' | 'grid';
+  tone?: number;
+  pulse?: number;
 }) {
   const merchant = offer.qapla_merchants;
   const [, setTick] = useState(0);
   useEffect(() => {
+    if (pulse != null) return;
     const id = window.setInterval(() => setTick((value) => value + 1), 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [pulse]);
   if (!merchant) return null;
   const Icon = categoryIcons[offer.category] || Tag;
-  const countdown = formatTimeRemaining(offer.expires_at);
+  const countdown = variant === 'grid' ? sheetCountdown(offer.expires_at) : formatTimeRemaining(offer.expires_at);
+  void pulse;
+
+  if (variant === 'grid') {
+    const wash = GRID_TONES[tone % GRID_TONES.length];
+    return (
+      <article className="overflow-hidden rounded-[1.35rem] bg-white shadow-md ring-1 ring-slate-100">
+        <button type="button" onClick={onClick} className="w-full text-left">
+          <div className={`relative flex h-[7.2rem] items-center justify-center bg-gradient-to-br ${wash}`}>
+            {offer.image_url ? (
+              <img src={offer.image_url} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            ) : (
+              <Icon className="h-10 w-10 text-white/90" />
+            )}
+            <span className="absolute left-2 top-2 rounded-full bg-white/95 px-2 py-0.5 text-[11px] font-extrabold text-slate-800 shadow-sm">
+              {offer.discount}
+            </span>
+            <span className="absolute bottom-2 left-1/2 inline-flex max-w-[92%] -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-black/25 px-2 py-0.5 text-[9px] font-extrabold text-white">
+              <Clock className="h-3 w-3" />
+              {countdown}
+            </span>
+          </div>
+          <div className="px-2.5 pb-2 pt-2">
+            <h3 className="line-clamp-2 min-h-[2.2rem] text-[12px] font-extrabold leading-tight text-slate-800">{offer.title}</h3>
+            <FirmName name={merchant.name} verified={merchant.is_verified} className="mt-0.5 text-[11px] font-semibold text-slate-400" />
+          </div>
+        </button>
+        <button
+          type="button"
+          onClick={onOpenCompany}
+          className="mx-2.5 mb-2.5 w-[calc(100%-1.25rem)] rounded-full bg-[#2f6fe0] py-1.5 text-center text-[11px] font-extrabold text-white"
+        >
+          Firma profili
+        </button>
+      </article>
+    );
+  }
 
   if (variant === 'tile') {
     return (
@@ -1083,7 +1208,7 @@ function CompactOfferCard({
           </div>
           <div className="px-2 py-1.5">
             <h3 className="line-clamp-2 text-[11px] font-extrabold leading-tight text-slate-800">{offer.title}</h3>
-            <p className="mt-1 truncate text-[9px] font-bold text-slate-400">{merchant.name}</p>
+            <FirmName name={merchant.name} verified={merchant.is_verified} className="mt-1 text-[9px] font-bold text-slate-400" />
           </div>
         </button>
         <button
@@ -1119,7 +1244,7 @@ function CompactOfferCard({
               </span>
             </div>
             <h3 className="mt-0.5 truncate text-[13px] font-extrabold leading-tight text-slate-800">{offer.title}</h3>
-            <p className="truncate text-[10px] text-gray-400">{merchant.name}</p>
+            <FirmName name={merchant.name} verified={merchant.is_verified} className="text-[10px] text-gray-400" />
           </div>
         </button>
         <button
@@ -1252,22 +1377,45 @@ function OfferDetailScreen({
 
   const remaining = formatTimeRemaining(offer.expires_at);
   void tick;
-
   if (!merchant) return null;
+  const campaignImage = offer.image_url?.trim() || '';
+  const companyLogo = merchant.logo_url || merchant.image_url || '';
 
   return (
     <div className="flex-1 flex flex-col pb-20">
-      <div className="relative h-56 flex-shrink-0" style={{ background: `linear-gradient(135deg, ${merchant.accent}, ${merchant.accent}cc)` }}>
+      <div className="relative h-56 flex-shrink-0 overflow-hidden" style={{ background: `linear-gradient(135deg, ${merchant.accent}, ${merchant.accent}cc)` }}>
+        {campaignImage ? (
+          <img src={campaignImage} alt="" className="absolute inset-0 h-full w-full object-cover" />
+        ) : null}
         <button
           onClick={onBack}
-          className="absolute top-12 left-4 z-10 w-10 h-10 rounded-2xl bg-white/30 backdrop-blur-sm flex items-center justify-center text-white transition active:scale-90"
+          className="absolute top-12 left-4 z-10 w-10 h-10 rounded-2xl bg-black/35 backdrop-blur-sm flex items-center justify-center text-white transition active:scale-90"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-24 h-24 rounded-5xl bg-white/20 backdrop-blur-sm flex items-center justify-center">
-            <Icon className="w-12 h-12 text-white" />
+        {campaignImage ? null : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-24 h-24 rounded-5xl bg-white/20 backdrop-blur-sm flex items-center justify-center overflow-hidden">
+              {companyLogo ? (
+                <img src={companyLogo} alt="" className="h-full w-full object-cover" />
+              ) : (
+                <Icon className="w-12 h-12 text-white" />
+              )}
+            </div>
           </div>
+        )}
+        <div className="absolute inset-x-0 bottom-0 z-10 flex items-center gap-2.5 bg-gradient-to-t from-black/75 to-transparent px-4 pb-4 pt-10">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-[#00A884] ring-2 ring-white">
+            {companyLogo ? (
+              <img src={companyLogo} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <span className="text-lg font-extrabold text-white">{(merchant.name || '?').slice(0, 1).toLocaleUpperCase('tr')}</span>
+            )}
+          </span>
+          <span className="min-w-0">
+            <FirmName name={merchant.name} verified={merchant.is_verified} tone="onDark" className="text-base font-extrabold text-white" />
+            <span className="block truncate text-xs font-semibold text-white/80">{merchant.category || offer.category}</span>
+          </span>
         </div>
         <Droplet className="absolute -bottom-6 -right-6 w-40 h-40 text-white/10" fill="currentColor" />
       </div>
@@ -1383,13 +1531,31 @@ function CouponDetailScreen({
   const offer = offers.find((o) => o.id === coupon.offer_id);
   const [copied, setCopied] = useState(false);
   const [tick, setTick] = useState(0);
-  const latest = readLocalClaims().find((item) => item.id === coupon.id) ?? coupon;
-  const cancelled = latest.status === 'cancelled';
+  const [latest, setLatest] = useState(coupon);
+  const cancelled = latest.status === 'cancelled' || latest.status === 'deleted';
+
+  useEffect(() => {
+    setLatest(readLocalClaims().find((item) => item.id === coupon.id) ?? coupon);
+  }, [coupon]);
 
   useEffect(() => {
     const interval = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => subscribeTables(['coupon_tickets', 'user_redemptions'], () => {
+    void readCouponTicketStatus(coupon.id).then((status) => {
+      if (!status || status === coupon.status) return;
+      if (status === 'deleted') {
+        onChanged(null);
+        return;
+      }
+      const next = { ...(readLocalClaims().find((item) => item.id === coupon.id) ?? coupon), status };
+      writeLocalClaim(next);
+      setLatest(next);
+      onChanged(next);
+    });
+  }), [coupon, onChanged]);
 
   const timeLeft = formatTimeRemaining(latest.expires_at);
   const isExpired = getMsRemaining(latest.expires_at) <= 0;
@@ -1451,7 +1617,7 @@ function CouponDetailScreen({
             {offer?.qapla_merchants && (
               <div className="mt-4 p-3 rounded-2xl bg-cream-50 text-left">
                 <p className="font-bold text-sm text-mint-800">{offer.title}</p>
-                <p className="text-xs text-gray-500 mt-0.5">{offer.qapla_merchants.name}</p>
+                <FirmName name={offer.qapla_merchants.name} verified={offer.qapla_merchants.is_verified} className="mt-0.5 text-xs text-gray-500" />
                 <div className="flex items-center gap-2 mt-2">
                   <span className="chip bg-mint-100 text-mint-700">{offer.discount}</span>
                   <span className="text-xs text-gray-400">{offer.qapla_merchants.address}</span>
@@ -1468,9 +1634,10 @@ function CouponDetailScreen({
               type="button"
               className="btn-primary py-3"
               onClick={() => {
-                restoreLocalClaim(latest.id);
-                const restored = readLocalClaims().find((item) => item.id === latest.id) ?? { ...latest, status: 'active' };
-                onChanged(restored);
+                void setCouponTicketStatus(latest, 'active').then((restored) => {
+                  setLatest(restored);
+                  onChanged(restored);
+                });
               }}
             >
               <RotateCcw className="w-4 h-4" /> Geri al
@@ -1480,8 +1647,10 @@ function CouponDetailScreen({
               type="button"
               className="rounded-2xl bg-amber-50 px-3 py-3 text-sm font-bold text-amber-700 flex items-center justify-center gap-1.5"
               onClick={() => {
-                cancelLocalClaim(latest.id);
-                onChanged({ ...latest, status: 'cancelled' });
+                void setCouponTicketStatus(latest, 'cancelled').then((next) => {
+                  setLatest(next);
+                  onChanged(next);
+                });
               }}
             >
               <Ban className="w-4 h-4" /> İptal et
@@ -1492,8 +1661,7 @@ function CouponDetailScreen({
             type="button"
             className="rounded-2xl bg-red-50 px-3 py-3 text-sm font-bold text-red-600 flex items-center justify-center gap-1.5"
             onClick={() => {
-              deleteLocalClaim(latest.id);
-              onChanged(null);
+              void setCouponTicketStatus(latest, 'deleted').then(() => onChanged(null));
             }}
           >
             <Trash2 className="w-4 h-4" /> Sil
@@ -1529,14 +1697,14 @@ function CouponsScreen({
   subtitle?: string;
 }) {
   const { user, profile } = useAuth();
-  const canCancel = profile?.role === 'user' || profile?.role === 'admin';
+  const ownsCoupon = profile?.role === 'user' || profile?.role === 'admin';
   const canDelete = profile?.role === 'admin';
   const [coupons, setCoupons] = useState<CouponClaim[]>([]);
   const [loading, setLoading] = useState(true);
   const consumerId = user?.id ?? getConsumerId();
 
-  const loadCoupons = useCallback(async () => {
-    setLoading(true);
+  const loadCoupons = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     const local = readLocalClaims().filter((c) => (
       (c.consumer_id === consumerId || c.consumer_id === user?.id)
       && c.status !== 'deleted'
@@ -1571,7 +1739,11 @@ function CouponsScreen({
     }
   }, [consumerId, user?.id]);
 
-  useEffect(() => { loadCoupons(); }, [loadCoupons]);
+  useEffect(() => { void loadCoupons(); }, [loadCoupons]);
+  useEffect(() => subscribeTables(
+    ['coupon_tickets', 'user_redemptions', 'campaigns'],
+    () => { void loadCoupons(true); },
+  ), [loadCoupons]);
 
   if (!user) {
     return (
@@ -1635,15 +1807,14 @@ function CouponsScreen({
                       </p>
                     </div>
                   </button>
-                  {(canCancel || canDelete) && (
+                  {(ownsCoupon || canDelete) && (
                   <div className="flex flex-col justify-center gap-1 pr-2">
-                    {canCancel && (cancelled ? (
+                    {ownsCoupon && !used && (cancelled ? (
                       <button
                         type="button"
                         className="rounded-xl bg-mint-50 px-2 py-1.5 text-[10px] font-bold text-mint-700"
                         onClick={() => {
-                          restoreLocalClaim(c.id);
-                          void loadCoupons();
+                          void setCouponTicketStatus(c, 'active').then(() => loadCoupons(true));
                         }}
                       >
                         Geri al
@@ -1653,8 +1824,7 @@ function CouponsScreen({
                         type="button"
                         className="rounded-xl bg-amber-50 px-2 py-1.5 text-[10px] font-bold text-amber-700"
                         onClick={() => {
-                          cancelLocalClaim(c.id);
-                          void loadCoupons();
+                          void setCouponTicketStatus(c, 'cancelled').then(() => loadCoupons(true));
                         }}
                       >
                         İptal
@@ -1665,8 +1835,7 @@ function CouponsScreen({
                       type="button"
                       className="rounded-xl bg-red-50 px-2 py-1.5 text-[10px] font-bold text-red-600"
                       onClick={() => {
-                        deleteLocalClaim(c.id);
-                        void loadCoupons();
+                        void setCouponTicketStatus(c, 'deleted').then(() => loadCoupons(true));
                       }}
                     >
                       Sil

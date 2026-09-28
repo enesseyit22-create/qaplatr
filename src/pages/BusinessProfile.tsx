@@ -9,7 +9,11 @@ import { useCompanyPosts } from '@/lib/posts';
 import { telHref, whatsappHref } from '@/lib/contact';
 import { formatDurationLeft, getMsRemaining } from '@/lib/utils';
 import { QapLaMark } from '@/components/QapLaMark';
+import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { PostMediaTile } from '@/components/PostMediaTile';
+import { readSavedAddress } from '@/lib/address';
+import { distanceMeters, hasValidCoords } from '@/lib/geo';
+import { postRadiusM, useReach } from '@/lib/reach';
 
 const BRAND = '#00A884';
 
@@ -32,15 +36,28 @@ export function BusinessProfile({
   owner?: boolean;
   embedded?: boolean;
 }) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
+  useReach();
   const guest = !user && !owner;
   const posts = useCompanyPosts(merchant.id);
+  const origin = readSavedAddress();
+  const postsNear = owner || profile?.role === 'admin' || !origin || !hasValidCoords(origin) || !hasValidCoords(merchant)
+    || distanceMeters(origin.latitude, origin.longitude, merchant.latitude, merchant.longitude) <= postRadiusM();
   const [fav, setFav] = useState(() => (user ? isFavorite(user.id, merchant.id) : false));
   const [following, setFollowState] = useState(() => (user ? isFollowing(user.id, merchant.id) : false));
-  const { count: followers } = useCompanyFollowers(merchant.id);
+  const { count: remoteFollowers } = useCompanyFollowers(merchant.id);
+  const [followerCount, setFollowerCount] = useState(remoteFollowers);
 
   useEffect(() => {
-    if (!user) return;
+    setFollowerCount(remoteFollowers);
+  }, [remoteFollowers]);
+
+  useEffect(() => {
+    if (!user) {
+      setFollowState(false);
+      return;
+    }
+    setFollowState(isFollowing(user.id, merchant.id));
     void hydrateFollows(user.id).then(() => {
       setFollowState(isFollowing(user.id, merchant.id));
     });
@@ -60,8 +77,13 @@ export function BusinessProfile({
       return;
     }
     const next = !following;
-    await setFollowing(user.id, merchant.id, next);
     setFollowState(next);
+    setFollowerCount((current) => Math.max(0, current + (next ? 1 : -1)));
+    const saved = await setFollowing(user.id, merchant.id, next);
+    if (saved !== next) {
+      setFollowState(saved);
+      setFollowerCount((current) => Math.max(0, current + (next ? -1 : 1)));
+    }
   };
 
   return (
@@ -113,7 +135,7 @@ export function BusinessProfile({
 
       <div className={embedded ? 'pt-12' : 'min-h-0 flex-1 overflow-y-auto pb-28 pt-12'}>
         <div className="px-5 text-center">
-          <h1 className="text-xl font-extrabold leading-tight text-slate-900">{merchant.name}</h1>
+          <h1 className="inline-flex items-center justify-center gap-1 text-xl font-extrabold leading-tight text-slate-900">{merchant.name}<VerifiedBadge verified={merchant.is_verified} /></h1>
           <p className="text-sm text-slate-500">{merchant.category}</p>
           <p className="mt-1 flex items-center justify-center gap-1 text-xs text-slate-400">
             <MapPin className="h-3.5 w-3.5" /> {merchant.address || 'Adres yok'}
@@ -121,11 +143,11 @@ export function BusinessProfile({
         </div>
 
         <div className="mx-5 mt-4 grid grid-cols-3 divide-x divide-mint-100 rounded-2xl border border-mint-100 bg-[#f3faf7]">
-          <Stat value={followers} label="Takipçi" />
+          <Stat value={followerCount} label="Takipçi" />
           <Stat value={posts.length} label="Gönderi" />
           <Stat value={activeOffers.length} label="Kampanya" />
         </div>
-        <CompanyFollowers companyId={merchant.id} />
+        {owner ? <CompanyFollowers companyId={merchant.id} canViewList /> : null}
 
         <div className="mt-3 flex flex-wrap items-center gap-2 px-5">
           {owner ? (
@@ -207,7 +229,9 @@ export function BusinessProfile({
 
         <section className={`mt-5 px-5 ${embedded ? 'pb-2' : 'pb-6'}`}>
           <h2 className="text-sm font-extrabold text-slate-800">Gönderiler</h2>
-          {posts.length === 0 ? (
+          {!postsNear ? (
+            <p className="mt-2 text-xs text-gray-400">Gönderiler bu mesafeden görünmüyor.</p>
+          ) : posts.length === 0 ? (
             <p className="mt-2 text-xs text-gray-400">Henüz gönderi yok.</p>
           ) : (
             <div className="relative mt-2 grid grid-cols-3 gap-0.5">

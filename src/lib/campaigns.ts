@@ -17,8 +17,12 @@ export function campaignsCreatedToday(campaigns: { company_id?: string; created_
   }).length;
 }
 
-export function dailyCampaignLimitReached(campaigns: { company_id?: string; created_at?: string }[], companyId?: string) {
-  return campaignsCreatedToday(campaigns, companyId) >= FREE_DAILY_CAMPAIGN_LIMIT;
+export function dailyCampaignLimitReached(
+  campaigns: { company_id?: string; created_at?: string }[],
+  companyId?: string,
+  limit = FREE_DAILY_CAMPAIGN_LIMIT,
+) {
+  return campaignsCreatedToday(campaigns, companyId) >= limit;
 }
 
 export type Company = {
@@ -37,6 +41,19 @@ export type Company = {
   logo_url?: string | null;
   cover_url?: string | null;
   whatsapp?: string | null;
+  is_pilot_firm?: boolean | null;
+  free_trial_months?: number | null;
+  subscription_ends_at?: string | null;
+  paid_started_at?: string | null;
+  subscription_enrolled?: boolean | null;
+  subscription_started_at?: string | null;
+  intro_price?: number | null;
+  intro_duration_months?: number | null;
+  standard_price?: number | null;
+  plan_tier?: 'standard' | 'premium' | null;
+  is_verified?: boolean | null;
+  tax_number?: string | null;
+  push_quota_override?: number | null;
   created_at: string;
 };
 
@@ -52,6 +69,7 @@ export type AppUser = {
   full_name?: string | null;
   role: AppUserRole;
   company_id: string | null;
+  vip?: boolean | null;
   city?: string | null;
   login_password?: string | null;
   created_at: string;

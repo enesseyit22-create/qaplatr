@@ -29,6 +29,8 @@ export type Merchant = {
   accent: string;
   is_open: boolean;
   is_featured?: boolean;
+  is_verified?: boolean;
+  plan_tier?: 'standard' | 'premium';
   created_at: string;
   phone?: string | null;
   image_url?: string | null;

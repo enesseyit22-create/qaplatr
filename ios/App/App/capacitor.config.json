@@ -17,7 +17,14 @@
 		"androidScheme": "https"
 	},
 	"plugins": {
-		"Geolocation": {}
+		"Geolocation": {},
+		"PushNotifications": {
+			"presentationOptions": [
+				"badge",
+				"sound",
+				"alert"
+			]
+		}
 	},
 	"packageClassList": [
 		"AppPlugin",

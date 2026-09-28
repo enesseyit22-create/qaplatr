@@ -3,15 +3,35 @@ import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { notifyAdminsOfSignup } from '@/lib/adminSettings';
 import { upsertLocalCompany, upsertLocalUser } from '@/lib/adminStore';
 import type { Company } from '@/lib/campaigns';
+import { checkTaxOrNationalId, type IdentityKind } from '@/lib/identityNumber';
 import { hasValidCoords } from '@/lib/geo';
+import { pilotColumns, readPilotAccess, readSubscriptionSettings, refreshSubscriptionSettings } from '@/lib/subscription';
 
 export const BUSINESS_SECTORS = [
   'Restoran',
   'Kafe',
+  'Yeme & İçme',
+  'Market',
+  'Giyim',
+  'Gelinlik',
+  'Güzellik',
   'Güzellik & Bakım',
   'Spor',
+  'Sağlık',
+  'Mobilya',
   'Dekorasyon',
   'Eğlence',
+  'Teknoloji',
+  'E-Ticaret',
+  'Hizmet',
+  'Eğitim',
+  'Otomotiv',
+  'Emlak',
+  'Kargo',
+  'Lojistik',
+  'Pet',
+  'Çocuk',
+  'Kurumsal',
   'Yerel Esnaf',
 ] as const;
 
@@ -59,6 +79,16 @@ export type BusinessApplication = {
   address: string;
   tax_office: string;
   tax_number: string;
+  identity_kind?: IdentityKind | null;
+  subscription_enrolled?: boolean;
+  subscription_started_at?: string | null;
+  intro_price?: number | null;
+  intro_duration_months?: number | null;
+  standard_price?: number | null;
+  is_pilot_firm?: boolean | null;
+  free_trial_months?: number | null;
+  subscription_ends_at?: string | null;
+  paid_started_at?: string | null;
   latitude: number | null;
   longitude: number | null;
   status: BusinessStatus;
@@ -77,6 +107,7 @@ export type BusinessRegisterInput = {
   address: string;
   taxOffice: string;
   taxNumber: string;
+  identityKind?: IdentityKind | null;
   latitude: number;
   longitude: number;
 };
@@ -96,6 +127,7 @@ type BusinessDraft = {
   address: string;
   tax_office: string;
   tax_number: string;
+  identity_kind?: IdentityKind | null;
   latitude: number | null;
   longitude: number | null;
 };
@@ -136,6 +168,13 @@ function asBusiness(row: Record<string, unknown> | null | undefined): BusinessAp
     address: String(row.address ?? ''),
     tax_office: String(row.tax_office ?? ''),
     tax_number: String(row.tax_number ?? ''),
+    identity_kind: row.identity_kind === 'national' || row.identity_kind === 'tax' ? row.identity_kind : null,
+    subscription_enrolled: Boolean(row.subscription_enrolled),
+    subscription_started_at: row.subscription_started_at ? String(row.subscription_started_at) : null,
+    intro_price: row.intro_price == null ? null : Number(row.intro_price),
+    intro_duration_months: row.intro_duration_months == null ? null : Number(row.intro_duration_months),
+    standard_price: row.standard_price == null ? null : Number(row.standard_price),
+    ...readPilotAccess(row),
     latitude: Number.isFinite(Number(row.latitude)) ? Number(row.latitude) : null,
     longitude: Number.isFinite(Number(row.longitude)) ? Number(row.longitude) : null,
     status: status === 'approved' || status === 'rejected' ? status : 'pending',
@@ -251,6 +290,26 @@ export async function persistRemoteBusinessResult(
       .maybeSingle();
     saved = asBusiness(patchedPin.data as Record<string, unknown> | null) ?? saved;
   }
+  if (input.identity_kind) {
+    const settings = readSubscriptionSettings();
+    const profilePatch: Record<string, unknown> = { identity_kind: input.identity_kind };
+    if (settings.is_subscription_active) {
+      profilePatch.subscription_enrolled = true;
+      profilePatch.subscription_started_at = new Date().toISOString();
+      profilePatch.intro_price = settings.intro_price;
+      profilePatch.intro_duration_months = settings.intro_duration_months;
+      profilePatch.standard_price = settings.standard_price;
+    }
+    const patchedIdentity = await supabase
+      .from('businesses')
+      .update(profilePatch)
+      .eq('id', saved.id)
+      .select('*')
+      .maybeSingle();
+    if (!patchedIdentity.error && patchedIdentity.data) {
+      saved = asBusiness(patchedIdentity.data as Record<string, unknown>) ?? saved;
+    }
+  }
   if (input.email && saved.email !== input.email) {
     const patched = await supabase
       .from('businesses')
@@ -307,7 +366,7 @@ export async function listBusinessApplications(): Promise<BusinessApplication[]>
     } else {
       const table = await supabase
         .from('businesses')
-        .select('id,user_id,email,owner_name,phone,company_name,sector,district,address,tax_office,tax_number,latitude,longitude,status,company_id,created_at')
+        .select('*')
         .order('created_at', { ascending: false });
       if (table.error) {
         throw new Error(friendlyAuthError(table.error.message || rpc.error?.message, 'Başvurular okunamadı.'));
@@ -332,7 +391,15 @@ export async function submitBusinessRegister(input: BusinessRegisterInput): Prom
   const district = input.district.trim();
   const address = input.address.trim();
   const taxOffice = input.taxOffice.trim();
-  const taxNumber = input.taxNumber.replace(/\s/g, '');
+  const rawTax = input.taxNumber.trim();
+  let taxNumber = '';
+  let identityKind: 'tax' | 'national' | null = null;
+  if (rawTax) {
+    const identity = checkTaxOrNationalId(rawTax);
+    if (!identity.ok) return { ok: false, message: identity.message };
+    taxNumber = identity.value;
+    identityKind = identity.kind;
+  }
 
   if (!email || password.length < 6) return { ok: false, message: 'Geçerli e-posta ve en az 6 karakter şifre girin.' };
   if (!ownerName) return { ok: false, message: 'Yetkili ad soyad girin.' };
@@ -341,11 +408,12 @@ export async function submitBusinessRegister(input: BusinessRegisterInput): Prom
   if (!sector) return { ok: false, message: 'Sektör seçin.' };
   if (!district) return { ok: false, message: 'İlçe seçin.' };
   if (!address) return { ok: false, message: 'Açık adres girin.' };
-  if (!taxOffice || !taxNumber) return { ok: false, message: 'Vergi dairesi ve vergi numarası girin.' };
   if (!hasValidCoords({ latitude: input.latitude, longitude: input.longitude })) {
     return { ok: false, message: 'Haritadan işletmenin tam konumunu seçin.' };
   }
 
+  await refreshSubscriptionSettings();
+  const settings = readSubscriptionSettings();
   const payload = {
     email,
     owner_name: ownerName,
@@ -356,6 +424,12 @@ export async function submitBusinessRegister(input: BusinessRegisterInput): Prom
     address,
     tax_office: taxOffice,
     tax_number: taxNumber,
+    identity_kind: identityKind,
+    subscription_enrolled: settings.is_subscription_active,
+    subscription_started_at: settings.is_subscription_active ? new Date().toISOString() : null,
+    intro_price: settings.is_subscription_active ? settings.intro_price : null,
+    intro_duration_months: settings.is_subscription_active ? settings.intro_duration_months : null,
+    standard_price: settings.is_subscription_active ? settings.standard_price : null,
     latitude: input.latitude,
     longitude: input.longitude,
     status: 'pending' as const,
@@ -439,6 +513,7 @@ export async function submitBusinessRegister(input: BusinessRegisterInput): Prom
       address,
       tax_office: taxOffice,
       tax_number: taxNumber,
+      identity_kind: identityKind,
       latitude: input.latitude,
       longitude: input.longitude,
     };
@@ -458,9 +533,25 @@ export async function submitBusinessRegister(input: BusinessRegisterInput): Prom
   }
 }
 
+async function writePilotFlag(businessId: string, companyId: string | null) {
+  const patch = pilotColumns(true);
+  const businessWrite = await supabase.from('businesses').update(patch).eq('id', businessId).select('*').maybeSingle();
+  if (businessWrite.error) {
+    throw new Error('Firma onaylandı fakat pilot bayrağı yazılamadı. SQL Editor’da 20260927150000_pilot_sixty_paywall.sql dosyasını çalıştırın.');
+  }
+  if (companyId) {
+    const companyWrite = await supabase.from('companies').update(patch).eq('id', companyId);
+    if (companyWrite.error) {
+      throw new Error('Firma onaylandı fakat pilot bayrağı yazılamadı. SQL Editor’da 20260927150000_pilot_sixty_paywall.sql dosyasını çalıştırın.');
+    }
+  }
+  return asBusiness(businessWrite.data as Record<string, unknown> | null);
+}
+
 export async function setBusinessStatusAction(
   id: string,
   status: BusinessStatus,
+  options?: { pilot?: boolean },
 ): Promise<BusinessApplication> {
   const localRows = readLocal();
   const local = localRows.find((item) => item.id === id);
@@ -469,15 +560,31 @@ export async function setBusinessStatusAction(
     const remote = await supabase.from('businesses').select('*').eq('id', id).maybeSingle();
     const source = asBusiness(remote.data as Record<string, unknown> | null) ?? local;
     const coords = pinCoords(source?.latitude, source?.longitude, source?.district ?? 'Osmangazi');
-    const { data, error } = await supabase.rpc('admin_set_business_status', {
+    const pilot = Boolean(options?.pilot) && status === 'approved';
+    let { data, error } = await supabase.rpc('admin_set_business_status', {
       p_id: id,
       p_status: status,
       p_latitude: coords.latitude,
       p_longitude: coords.longitude,
+      ...(pilot ? { p_pilot: true } : {}),
     });
+    if (error && pilot && /p_pilot|schema cache|PGRST202|Could not find the function/i.test(error.message)) {
+      const retry = await supabase.rpc('admin_set_business_status', {
+        p_id: id,
+        p_status: status,
+        p_latitude: coords.latitude,
+        p_longitude: coords.longitude,
+      });
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) throw new Error(friendlyAuthError(error.message, 'Başvuru güncellenemedi.'));
     if (data) {
-      const saved = asBusiness(data as Record<string, unknown>);
+      let saved = asBusiness(data as Record<string, unknown>);
+      if (pilot && saved) {
+        const flagged = await writePilotFlag(id, saved.company_id ?? null);
+        saved = flagged ?? { ...saved, ...pilotColumns(true), is_pilot_firm: true };
+      }
       if (saved) {
         rememberLocalApplication(saved);
         return saved;
@@ -488,6 +595,7 @@ export async function setBusinessStatusAction(
 
   if (!local) throw new Error('Başvuru bulunamadı.');
   const coords = pinCoords(local.latitude, local.longitude, local.district);
+  const pilot = Boolean(options?.pilot) && status === 'approved';
   let companyId = local.company_id;
   if (status === 'approved' && !companyId) {
     const company: Company = {
@@ -503,6 +611,7 @@ export async function setBusinessStatusAction(
       email: local.email,
       owner_email: local.email,
       created_at: new Date().toISOString(),
+      ...(pilot ? pilotColumns(true) : {}),
     };
     upsertLocalCompany(company);
     companyId = company.id;
@@ -519,6 +628,8 @@ export async function setBusinessStatusAction(
     ...local,
     status,
     company_id: companyId,
+    ...(pilot ? pilotColumns(true) : {}),
+    is_pilot_firm: pilot || Boolean(local.is_pilot_firm),
   };
   writeLocal(localRows.map((item) => item.id === id ? next : item));
   return next;

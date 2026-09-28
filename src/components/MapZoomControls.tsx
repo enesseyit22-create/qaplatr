@@ -3,19 +3,16 @@ import { zoomActiveMap } from '@/lib/mapControl';
 
 export function MapZoomControls({
   locating = false,
-  bottom = 180,
   hidden = false,
   onLocate,
 }: {
   locating?: boolean;
-  bottom?: number;
   hidden?: boolean;
   onLocate?: () => void;
 }) {
   return (
     <div
-      className={`pointer-events-auto absolute right-3 z-[800] flex flex-col gap-2 transition-[opacity,transform] duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${hidden ? 'pointer-events-none translate-y-24 opacity-0' : 'translate-y-0 opacity-100'}`}
-      style={{ bottom }}
+      className={`explore-locate pointer-events-auto absolute z-[1200] flex flex-col gap-2 transition-[opacity,transform] duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${hidden ? 'pointer-events-none translate-y-24 opacity-0' : 'translate-y-0 opacity-100'}`}
     >
       <button
         type="button"

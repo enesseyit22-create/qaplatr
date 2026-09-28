@@ -41,21 +41,31 @@ subprojects { subproject ->
 
         stubTypedefFiles(subproject)
 
-        subproject.tasks.matching { task ->
-            def name = task.name
-            return name.startsWith('extract') && name.contains('Annotations')
-        }.configureEach { task ->
-            task.enabled = false
-            task.doFirst { stubTypedefFiles(subproject) }
-            task.doLast { stubTypedefFiles(subproject) }
-        }
-
-        subproject.tasks.matching { task ->
-            def name = task.name
-            return name.startsWith('sync') && name.endsWith('LibJars')
-        }.configureEach { task ->
-            stubTypedefFiles(subproject)
-            task.doFirst { stubTypedefFiles(subproject) }
+        ['debug', 'release'].each { variant ->
+            def cap = variant.substring(0, 1).toUpperCase() + variant.substring(1)
+            def typedef = new File(
+                subproject.buildDir,
+                "intermediates/annotations_typedef_file/${variant}/extract${cap}Annotations/typedefs.txt"
+            )
+            def ensureName = "ensureTypedefs${cap}"
+            if (subproject.tasks.findByName(ensureName) == null) {
+                def ensureTask = subproject.tasks.register(ensureName) {
+                    outputs.file(typedef)
+                    doLast {
+                        typedef.parentFile.mkdirs()
+                        if (!typedef.exists()) {
+                            typedef.text = ''
+                        }
+                        stubTypedefFiles(subproject)
+                    }
+                }
+                ensureTask.configure {
+                    mustRunAfter(subproject.tasks.matching { it.name == "extract${cap}Annotations" })
+                }
+                subproject.tasks.matching { task -> task.name == "sync${cap}LibJars" }.configureEach { task ->
+                    task.dependsOn(ensureTask)
+                }
+            }
         }
     }
 }

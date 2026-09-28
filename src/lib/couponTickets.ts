@@ -53,6 +53,32 @@ function emptyInspect(code: string, issues: string[]): CouponInspect {
   };
 }
 
+export async function readCouponTicketStatus(id: string): Promise<string | null> {
+  const local = readLocalClaims().find((item) => item.id === id)?.status ?? null;
+  if (!isSupabaseConfigured || !id) return local;
+  const { data, error } = await supabase.from('coupon_tickets').select('status').eq('id', id).maybeSingle();
+  if (error || !data?.status) return local;
+  return String(data.status);
+}
+
+export async function setCouponTicketStatus(
+  claim: CouponClaim,
+  status: CouponClaim['status'],
+): Promise<CouponClaim> {
+  const next = { ...claim, status };
+  writeLocalClaim(next);
+  if (!isSupabaseConfigured || claim.id.startsWith('demo-')) return next;
+  const rpc = await supabase.rpc('set_coupon_ticket_status', { p_id: claim.id, p_status: status });
+  if (rpc.error) {
+    const update = await supabase.from('coupon_tickets').update({
+      status,
+      used_at: status === 'used' ? new Date().toISOString() : null,
+    }).eq('id', claim.id);
+    if (update.error) throw new Error(update.error.message || rpc.error.message);
+  }
+  return next;
+}
+
 export async function saveCouponTicket(claim: CouponClaim) {
   writeLocalClaim(claim);
   if (!isSupabaseConfigured) return;
@@ -184,7 +210,11 @@ export async function approveCouponCode(raw: string, companyId?: string) {
         throw new Error('Bu kupon bu firmaya ait değil.');
       }
       if (remote.data.status === 'used') throw new Error('Bu kupon zaten onaylanmış.');
-      await supabase.from('coupon_tickets').update({ status: 'used', used_at: new Date().toISOString() }).eq('code', code);
+      const marked = await supabase.rpc('set_coupon_ticket_status', { p_id: remote.data.id, p_status: 'used' });
+      if (marked.error) {
+        const update = await supabase.from('coupon_tickets').update({ status: 'used', used_at: new Date().toISOString() }).eq('id', remote.data.id);
+        if (update.error) throw new Error(update.error.message || marked.error.message);
+      }
     } else if (!local) {
       throw new Error(inspect.issues[0] || 'Bu koda ait kupon bulunamadı.');
     }

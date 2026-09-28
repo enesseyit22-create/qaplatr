@@ -22,7 +22,7 @@ export function VipLockedFeature({
         </div>
       </div>
       <p className="relative mt-4 rounded-2xl bg-amber-50/90 px-3 py-2.5 text-center text-[11px] font-extrabold uppercase tracking-[0.14em] text-amber-800">
-        QapLA VIP üyelikte açılır
+        Premium ile açılır · lansman 1299 TL/ay
       </p>
     </section>
   );

@@ -6,6 +6,7 @@ import { StoryStudio } from '@/components/StoryStudio';
 import { canCompanyPostStories } from '@/lib/stories';
 import { getMsRemaining } from '@/lib/utils';
 import { EditBusinessProfile, type BusinessProfileDraft } from '@/pages/EditBusinessProfile';
+import { VerifiedBadge } from '@/components/VerifiedBadge';
 
 type AccordionKey = 'contact' | 'campaigns' | 'actions';
 
@@ -76,7 +77,7 @@ export function AdminBusinessDetail({
         <ChevronLeft className="h-4 w-4" /> Firma listesi
       </button>
       <article className="rounded-2xl border border-mint-100 bg-white px-3 py-3">
-        <p className="text-sm font-extrabold text-mint-900">{company.name}{company.is_featured ? ' · öne çıkan' : ''}</p>
+        <p className="inline-flex items-center gap-1 text-sm font-extrabold text-mint-900">{company.name}<VerifiedBadge verified={company.is_verified} />{company.is_featured ? ' · öne çıkan' : ''}</p>
         <p className="mt-0.5 text-[11px] text-gray-400">{company.category}</p>
       </article>
 

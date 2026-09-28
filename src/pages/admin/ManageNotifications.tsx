@@ -49,7 +49,9 @@ export function ManageNotifications({ companies = [] }: { companies?: Company[] 
           <Plus className="h-3.5 w-3.5" /> Yeni
         </button>
       </div>
-      {error ? <p className="rounded-2xl bg-red-50 px-3 py-2 text-xs text-red-600">{error}</p> : null}
+      {error ? (
+        <p className={`rounded-2xl px-3 py-2 text-xs ${error.includes('kayda alındı') || error.includes('kaydedildi') ? 'bg-amber-50 text-amber-800' : 'bg-red-50 text-red-600'}`}>{error}</p>
+      ) : null}
       <div className="flex flex-col gap-2 sm:flex-row">
         <select
           className="min-w-0 flex-1 rounded-2xl border border-mint-100 bg-white px-3 py-2 text-sm"
@@ -100,12 +102,17 @@ export function ManageNotifications({ companies = [] }: { companies?: Company[] 
             setError(null);
             try {
               if (editing) await updateAppNotice(editing.id, input);
-              else await addAppNotice(input);
+              else {
+                const published = await addAppNotice(input);
+                if (published.warning) setError(published.warning);
+              }
               setCreating(false);
               setEditing(null);
               await reload();
             } catch (err) {
-              setError(err instanceof Error ? err.message : 'Kaydedilemedi');
+              const message = err instanceof Error ? err.message : 'Kaydedilemedi';
+              console.error('Bildirim kaydedilemedi', message, err);
+              setError(message);
             } finally {
               setBusy(false);
             }
@@ -133,7 +140,7 @@ export function ManageNotifications({ companies = [] }: { companies?: Company[] 
                   <p className="text-sm font-extrabold text-mint-900">{item.title}</p>
                   <p className="mt-0.5 line-clamp-2 text-xs text-gray-500">{item.body}</p>
                   <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-[#00A884]">
-                    {item.audience === 'all' ? 'Genel' : item.audience === 'users' ? 'Kullanıcılar' : 'Firmalar'}
+                    {item.audience === 'all' ? 'Tümü' : item.audience === 'guests' ? 'Misafirler' : item.audience === 'users' ? 'Kullanıcılar' : item.audience === 'admin' ? 'Yöneticiler' : 'Firmalar'}
                     {' · '}
                     {item.from_kind === 'company' || item.company_id
                       ? (companies.find((row) => row.id === item.company_id)?.name || item.from_name)
@@ -209,8 +216,8 @@ function NoticeEditor({
         });
       }}
     >
-      <div className="grid grid-cols-3 gap-1.5">
-        {([['all', 'Genel'], ['users', 'Kullanıcılar'], ['merchants', 'Firmalar']] as const).map(([id, label]) => (
+      <div className="grid grid-cols-4 gap-1.5">
+        {([['all', 'Tümü'], ['guests', 'Misafir'], ['users', 'Kullanıcı'], ['merchants', 'Firma']] as const).map(([id, label]) => (
           <button
             key={id}
             type="button"
@@ -225,6 +232,9 @@ function NoticeEditor({
         <option value="">Gönderen: QapLA</option>
         {companies.map((item) => <option key={item.id} value={item.id}>Gönderen: {item.name}</option>)}
       </select>
+      {audience === 'all' ? (
+        <p className="text-[10px] text-gray-400">Tümü; misafir, kullanıcı ve firmaya ayrı bildirim olarak gider.</p>
+      ) : null}
       {audience === 'merchants' && !asCompany ? (
         <p className="text-[10px] text-gray-400">Firma seçmezsen bildirim tüm işletmelere gider.</p>
       ) : null}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { FirmName } from '@/components/VerifiedBadge';
 import {
   Bell,
   ChevronLeft,
@@ -29,6 +30,8 @@ import { reviewsForUser } from '@/lib/reviews';
 import { ROLE_LABELS } from '@/lib/roleMatrix';
 import { TabPageShell, tabCard, tabField, tabIconWrap, tabPrimary } from '@/components/TabPageShell';
 import { campaignAlertsAllowed, useAppFeatures } from '@/lib/appFeatures';
+import { identityLabel } from '@/lib/identityNumber';
+import { formatTrialDate, pilotTrialActive, subscriptionPlanText } from '@/lib/subscription';
 import { useLegalDocs } from '@/lib/legalDocs';
 import { SupportContactForm } from '@/components/SupportContactForm';
 import { SUPPORT_EMAIL } from '@/lib/support';
@@ -403,7 +406,7 @@ export function ProfileTabScreen({
                   <Heart className="h-5 w-5 fill-mint-500 text-mint-500" />
                 </span>
                 <span className="min-w-0 flex-1 text-left">
-                  <span className="block truncate font-extrabold text-mint-800">{item.name}</span>
+                  <FirmName name={item.name} verified={item.is_verified} className="font-extrabold text-mint-800" />
                   <span className="block truncate text-xs text-gray-400">{item.category}</span>
                 </span>
                 <ChevronRight className="h-4 w-4 text-gray-300" />
@@ -635,9 +638,25 @@ function MembershipInfo({
     { label: 'İlçe', value: application?.district || '—' },
     { label: 'Açık adres', value: application?.address || '—' },
     { label: 'Vergi dairesi', value: application?.tax_office || '—' },
-    { label: 'Vergi numarası', value: application?.tax_number || '—' },
+    { label: identityLabel(application?.identity_kind), value: application?.tax_number || '—' },
     { label: 'Üyelik durumu', value: statusLabel },
   ];
+  if (application?.is_pilot_firm && pilotTrialActive(application)) {
+    rows.push({
+      label: 'Pilot firma',
+      value: `${formatTrialDate(application.subscription_ends_at)} tarihine kadar ücretsiz`,
+    });
+  } else if (application?.is_pilot_firm && application.paid_started_at) {
+    rows.push({
+      label: 'Abonelik',
+      value: subscriptionPlanText(),
+    });
+  } else if (application?.subscription_enrolled) {
+    rows.push({
+      label: 'Abonelik',
+      value: subscriptionPlanText(),
+    });
+  }
   return (
     <section className="overflow-hidden rounded-3xl border border-mint-100 bg-white p-4 shadow-sm">
       <p className="mb-1 text-[11px] font-extrabold uppercase tracking-[0.16em] text-mint-600">Üyelik bilgileri</p>

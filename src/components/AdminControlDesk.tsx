@@ -1,7 +1,8 @@
 import { Component, useState, type ErrorInfo, type ReactNode } from 'react';
-import {
-  Bell, Building2, ChevronLeft, FileText, HelpCircle, ImagePlus, Lock, Send, Settings, Smartphone, Users,
+import { CreditCard, Bell, Building2, ChevronLeft, FileText, HelpCircle, ImagePlus, Lock, Send, Settings, Smartphone, Users,
 } from 'lucide-react';
+import { AdminSubscriptionDesk } from '@/components/AdminSubscriptionDesk';
+import { ReachDesk } from '@/components/ReachDesk';
 import { AdminVipDesk } from '@/components/AdminVipDesk';
 import { AdminReportsPanel } from '@/components/AdminReports';
 import {
@@ -18,8 +19,9 @@ import { AdminNotificationSettings } from '@/pages/admin/AdminNotificationSettin
 import { ManageNotifications } from '@/pages/admin/ManageNotifications';
 import { ManageStories } from '@/pages/admin/ManageStories';
 import type { AppUser, Campaign, Company, UserRedemption } from '@/lib/campaigns';
+import { setCompanyPlanAction, setCompanyPushQuotaAction, setCompanyTermAction, setMemberVipAction } from '@/lib/actions/admin';
 
-type Hub = 'home' | 'user' | 'merchant' | 'vip' | 'legal' | 'help' | 'notify' | 'prefs' | 'storiesManage' | 'report';
+type Hub = 'home' | 'user' | 'merchant' | 'vip' | 'subscription' | 'legal' | 'help' | 'notify' | 'prefs' | 'storiesManage' | 'report';
 
 const USER_GROUPS: { title: string; ids: UserFeatureId[] }[] = [
   { title: 'Hesap', ids: ['details', 'security', 'settings'] },
@@ -111,7 +113,17 @@ export function AdminControlDesk({
             onToggle={(id, value) => setAppFeature('merchant', id, value)}
           />
         ) : null}
-        {hub === 'vip' ? <AdminVipDesk /> : null}
+        {hub === 'vip' ? (
+          <AdminVipDesk
+            companies={safeCompanies}
+            users={safeUsers}
+            onPlan={async (company, tier) => { await setCompanyPlanAction(company.id, tier); }}
+            onQuota={async (company, quota) => { await setCompanyPushQuotaAction(company.id, quota); }}
+            onTerm={async (company, endsAt) => { await setCompanyTermAction(company.id, endsAt); }}
+            onMemberVip={async (member, vip) => { await setMemberVipAction(member.id, vip); }}
+          />
+        ) : null}
+        {hub === 'subscription' ? <AdminSubscriptionDesk /> : null}
         {hub === 'legal' ? <LegalEditor field="privacy" title="Gizlilik" extraField="terms" extraTitle="Kullanım koşulları" /> : null}
         {hub === 'help' ? <LegalEditor field="help" title="Yardım metni" /> : null}
         {hub === 'notify' ? <ManageNotifications companies={safeCompanies} /> : null}
@@ -126,10 +138,12 @@ export function AdminControlDesk({
 
   return (
     <div className="space-y-2.5">
+      <ReachDesk />
       <HubGroup title="Uygulama">
         <HubBtn icon={Users} label="Kullanıcı" onClick={() => setHub('user')} />
         <HubBtn icon={Building2} label="Firma" onClick={() => setHub('merchant')} />
         <HubBtn icon={Lock} label="VIP" onClick={() => setHub('vip')} />
+        <HubBtn icon={CreditCard} label="Abonelik" onClick={() => setHub('subscription')} />
       </HubGroup>
       <HubGroup title="Belgeler">
         <HubBtn icon={FileText} label="Sözleşme" onClick={() => setHub('legal')} />
@@ -280,7 +294,7 @@ function NoticeComposer({ companies }: { companies: Company[] }) {
         setDone(null);
         try {
           const companyId = audience === 'merchants' && asCompany ? asCompany : null;
-          await addAppNotice({
+          const published = await addAppNotice({
             title: title.trim(),
             body: body.trim(),
             from_kind: companyId ? 'company' : 'admin',
@@ -290,29 +304,38 @@ function NoticeComposer({ companies }: { companies: Company[] }) {
           });
           setTitle('');
           setBody('');
-          setDone(
+          setDone(published.warning ?? (
             audience === 'all'
-              ? 'Genel bildirim gönderildi'
-              : audience === 'users'
-                ? 'Yalnızca kullanıcılara gönderildi'
-                : companyId
-                  ? `${firm?.name} firmasına gönderildi`
-                  : 'Tüm firmalara gönderildi',
-          );
+              ? 'Misafir, kullanıcı ve firmaya ayrı ayrı gönderildi'
+              : audience === 'guests'
+                ? 'Misafirlere push olarak gönderildi'
+                : audience === 'users'
+                  ? 'Kullanıcılara push olarak gönderildi'
+                  : companyId
+                    ? `${firm?.name} firmasına push olarak gönderildi`
+                    : 'Firmalara push olarak gönderildi'
+          ));
         } catch (err) {
-          setDone(err instanceof Error ? err.message : 'Gönderilemedi');
+          const message = err instanceof Error ? err.message : 'Gönderilemedi';
+          console.error('Bildirim gönderilemedi', message, err);
+          setDone(message);
         } finally {
           setBusy(false);
         }
       }}
     >
       <p className="text-sm font-extrabold text-mint-900">Bildirim gönder</p>
-      <p className="text-[11px] text-gray-400">Yalnızca yönetici. Hedef kitleye göre gider.</p>
-      <div className="grid grid-cols-3 gap-1.5">
+      <p className="text-[11px] text-gray-400">
+        {audience === 'all'
+          ? 'Tümü; misafir, kullanıcı ve firmaya ayrı bildirim olarak gider.'
+          : 'Yalnızca yönetici. Seçilen kitleye gider.'}
+      </p>
+      <div className="grid grid-cols-4 gap-1.5">
         {([
-          ['all', 'Genel'],
-          ['users', 'Kullanıcılar'],
-          ['merchants', 'Firmalar'],
+          ['all', 'Tümü'],
+          ['guests', 'Misafir'],
+          ['users', 'Kullanıcı'],
+          ['merchants', 'Firma'],
         ] as const).map(([id, label]) => (
           <button
             key={id}
@@ -341,7 +364,7 @@ function NoticeComposer({ companies }: { companies: Company[] }) {
       <button type="submit" disabled={busy} className="inline-flex w-full items-center justify-center gap-1.5 rounded-2xl bg-mint-500 py-2.5 text-sm font-extrabold text-white disabled:opacity-50">
         <Send className="h-4 w-4" /> {busy ? 'Gönderiliyor' : 'Gönder'}
       </button>
-      {done ? <p className="text-center text-xs font-bold text-mint-600">{done}</p> : null}
+      {done ? <p className={`text-center text-xs font-bold ${done.includes('kayda alındı') || done.includes('kaydedildi') ? 'text-amber-700' : done.includes('gönderildi') ? 'text-mint-600' : 'text-red-600'}`}>{done}</p> : null}
     </form>
   );
 }

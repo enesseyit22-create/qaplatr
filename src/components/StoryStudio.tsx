@@ -30,7 +30,7 @@ export function StoryStudio({
   const [caption, setCaption] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const merchantAllowed = actor !== 'merchant' || canCompanyPostStories(company?.id);
+  const merchantAllowed = actor !== 'merchant' || canCompanyPostStories(company?.id) || company?.plan_tier === 'premium';
 
   const selected = companies.find((item) => item.id === companyId) ?? company ?? null;
   const rows: Story[] = actor === 'merchant' && company
@@ -97,7 +97,7 @@ export function StoryStudio({
         <p className={`text-[11px] ${muted}`}>
           {actor === 'admin'
             ? 'Görsel ve açıklama burada yazılır. Kullanıcı hikayede yalnızca isim ve VIP logosunu görür. Yönetici hikayesi 1 yıl kalır.'
-            : 'Dikey fotoğraf (9:16). Paylaşımın 1 gün sonra kaybolur; kullanıcıya 1 km içindeki hikayeler önce çıkar.'}
+            : 'Dikey fotoğraf (9:16). Talep yönetici onayından sonra 24 saat yayında kalır.'}
         </p>
         {actor === 'admin' && !company && companies.length > 0 ? (
           <select className={field} value={companyId} onChange={(event) => setCompanyId(event.target.value)}>
@@ -115,7 +115,7 @@ export function StoryStudio({
         <input className={field} placeholder="Kısa yazı (isteğe bağlı)" value={caption} onChange={(event) => setCaption(event.target.value)} />
         {error ? <p className="text-xs text-red-400">{error}</p> : null}
         <button type="submit" disabled={busy} className={`flex w-full items-center justify-center rounded-2xl py-2.5 text-sm font-extrabold text-white disabled:opacity-50 ${tone === 'dark' ? 'bg-emerald-500' : 'bg-mint-500'}`}>
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Hikayeyi yayınla'}
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : (actor === 'merchant' ? 'Yöneticiden İzin / Onay Talep Et' : 'Hikayeyi yayınla')}
         </button>
       </form>
 
@@ -127,7 +127,7 @@ export function StoryStudio({
             <img src={item.image_data} alt="" className="h-14 w-9 shrink-0 rounded-lg object-cover" />
             <div className="min-w-0 flex-1">
               <p className={`truncate text-xs font-bold ${tone === 'dark' ? 'text-white' : 'text-mint-900'}`}>{item.company_name}</p>
-              <p className={`truncate text-[11px] ${muted}`}>{item.caption || 'Yazısız'}</p>
+              <p className={`truncate text-[11px] ${muted}`}>{item.status === 'pending' ? 'Onay bekliyor' : (item.caption || 'Yazısız')}</p>
             </div>
             <button type="button" onClick={() => { void removeStory(item.id).then(() => onChanged?.()); }} className="rounded-lg p-2 text-red-400">
               <Trash2 className="h-4 w-4" />

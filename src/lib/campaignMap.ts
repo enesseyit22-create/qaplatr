@@ -1,6 +1,18 @@
 import type { CampaignWithCompany, Company } from '@/lib/campaigns';
 import type { Merchant, OfferWithMerchant } from '@/lib/supabase';
 
+export const CAMPAIGN_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export function campaignWindowEnd(createdAt?: string | null) {
+  const start = new Date(createdAt || '').getTime();
+  if (!Number.isFinite(start)) return 0;
+  return start + CAMPAIGN_WINDOW_MS;
+}
+
+export function campaignWindowOpen(createdAt?: string | null, now = Date.now()) {
+  return campaignWindowEnd(createdAt) > now;
+}
+
 export function companyToMerchant(company: Company): Merchant {
   return {
     id: company.id,
@@ -14,6 +26,8 @@ export function companyToMerchant(company: Company): Merchant {
     accent: company.is_featured ? '#1dc9a0' : '#72c9df',
     is_open: true,
     is_featured: company.is_featured,
+    is_verified: Boolean(company.is_verified),
+    plan_tier: company.plan_tier === 'premium' ? 'premium' : 'standard',
     created_at: company.created_at,
     phone: company.phone ?? null,
     whatsapp: company.whatsapp ?? null,
@@ -25,9 +39,7 @@ export function companyToMerchant(company: Company): Merchant {
 
 export function campaignToOffer(campaign: CampaignWithCompany): OfferWithMerchant {
   const merchant = companyToMerchant(campaign.companies);
-  const expiry = campaign.expiry_date.includes('T')
-    ? campaign.expiry_date
-    : `${campaign.expiry_date}T23:59:59.000Z`;
+  const expiry = new Date(campaignWindowEnd(campaign.created_at)).toISOString();
 
   return {
     id: campaign.id,

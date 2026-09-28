@@ -7,21 +7,21 @@ import { groupPins, shouldCluster } from '@/lib/pinLayout';
 import { sectorIdForCategory } from '@/lib/sectors';
 import { SECTOR_PIN_ICONS } from '@/lib/sectorIcons';
 import type { SavedAddress } from '@/lib/address';
+import { hasValidCoords } from '@/lib/geo';
+import { getMsRemaining } from '@/lib/utils';
 
 export function MerchantPinLayer({
-  merchants,
   offers,
   sheetOffset,
   origin = null,
-  onSelectMerchant,
   onInspectOffer,
+  onPreviewOffer,
 }: {
-  merchants: Merchant[];
   offers: OfferWithMerchant[];
   sheetOffset: number;
   origin?: SavedAddress | null;
-  onSelectMerchant?: (merchant: Merchant) => void;
   onInspectOffer?: (offer: OfferWithMerchant) => void;
+  onPreviewOffer?: (offer: OfferWithMerchant) => void;
 }) {
   const engine = useQaplaMap();
   const [zoom, setZoom] = useState(15);
@@ -38,15 +38,34 @@ export function MerchantPinLayer({
     };
   }, [engine]);
 
-  const groups = useMemo(
-    () => groupPins(merchants.map((item) => ({
-      id: item.id,
-      lat: Number(item.latitude),
-      lng: Number(item.longitude),
-    })).filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lng)), zoom),
-    [merchants, zoom],
+  const campaigns = useMemo(
+    () => offers.filter((offer) => {
+      const place = offer.qapla_merchants;
+      const id = String(offer.id ?? '');
+      if (id.startsWith('story') || id.startsWith('demo-story')) return false;
+      return Boolean(offer.is_active && place && hasValidCoords(place) && getMsRemaining(offer.expires_at) > 0);
+    }),
+    [offers],
   );
-  const byId = useMemo(() => new Map(merchants.map((item) => [item.id, item])), [merchants]);
+  const byMerchant = useMemo(() => {
+    const buckets = new Map<string, OfferWithMerchant[]>();
+    for (const offer of campaigns) {
+      const id = offer.qapla_merchants?.id || offer.merchant_id;
+      if (!id) continue;
+      const list = buckets.get(id) ?? [];
+      list.push(offer);
+      buckets.set(id, list);
+    }
+    return buckets;
+  }, [campaigns]);
+  const groups = useMemo(
+    () => groupPins([...byMerchant.entries()].map(([id, list]) => ({
+      id,
+      lat: Number(list[0]?.qapla_merchants?.latitude),
+      lng: Number(list[0]?.qapla_merchants?.longitude),
+    })), zoom),
+    [byMerchant, zoom],
+  );
 
   return (
     <>
@@ -63,23 +82,28 @@ export function MerchantPinLayer({
           );
         }
         return group.spread.map((point) => {
-          const merchant = byId.get(point.id);
-          if (!merchant) return null;
-          const deal = offers.find((item) => item.merchant_id === merchant.id && item.is_active);
-          const fresh = Boolean(deal && Date.now() - new Date(deal.created_at).getTime() < 6 * 3600000);
+          const pack = byMerchant.get(point.id) ?? [];
+          const offer = pack[0];
+          const place = offer?.qapla_merchants;
+          if (!offer || !place) return null;
+          const fresh = Date.now() - new Date(offer.created_at).getTime() < 6 * 3600000;
           return (
             <DropletOverlay
-              key={merchant.id}
-              merchant={{ ...merchant, latitude: point.lat, longitude: point.lng }}
-              offer={deal ?? null}
+              key={place.id}
+              count={pack.length}
+              merchant={{
+                ...place,
+                latitude: point.lat,
+                longitude: point.lng,
+                is_featured: pack.some((item) => item.is_featured) || place.is_featured,
+              }}
+              offer={offer}
               origin={origin}
-              hasDeal={Boolean(deal)}
+              hasDeal
               isFresh={fresh}
               sheetOffset={sheetOffset}
-              onOpenProfile={() => onSelectMerchant?.(merchant)}
-              onInspectCampaign={() => {
-                if (deal) onInspectOffer?.(deal);
-              }}
+              onOpenProfile={() => (onPreviewOffer ?? onInspectOffer)?.(offer)}
+              onInspectCampaign={() => (onPreviewOffer ?? onInspectOffer)?.(offer)}
             />
           );
         });
@@ -158,6 +182,7 @@ export function DropletOverlay({
   origin = null,
   hasDeal,
   isFresh,
+  count = 1,
   sheetOffset: _sheetOffset = 260,
   onOpenProfile,
   onInspectCampaign,
@@ -167,6 +192,7 @@ export function DropletOverlay({
   origin?: SavedAddress | null;
   hasDeal: boolean;
   isFresh: boolean;
+  count?: number;
   sheetOffset?: number;
   onOpenProfile: () => void;
   onInspectCampaign?: () => void;
@@ -180,7 +206,7 @@ export function DropletOverlay({
 
   useEffect(() => {
     if (!engine) return;
-    const el = dropletElement(merchant, hasDeal, isFresh);
+    const el = dropletElement(merchant, hasDeal, isFresh, count);
 
     if (engine.engine === 'leaflet') {
       const marker = L.marker([merchant.latitude, merchant.longitude], {
@@ -214,7 +240,7 @@ export function DropletOverlay({
     return () => {
       marker.remove();
     };
-  }, [engine, merchant.id, merchant.latitude, merchant.longitude, merchant.name, merchant.category, merchant.phone, merchant.is_featured, hasDeal, isFresh]);
+  }, [engine, merchant.id, merchant.latitude, merchant.longitude, merchant.name, merchant.category, merchant.phone, merchant.is_featured, merchant.is_verified, hasDeal, isFresh, count]);
 
   return null;
 }
@@ -264,19 +290,21 @@ function popupPadding(sheetOffset: number) {
 }
 
 function clusterHtml(count: number) {
-  return `<button type="button" class="qapla-cluster" aria-label="${count} işletme">${count}</button>`;
+  return `<button type="button" class="qapla-cluster" aria-label="${count} kampanya">${count}</button>`;
 }
 
-function dropletElement(merchant: Merchant, hasDeal: boolean, isFresh: boolean) {
+function dropletElement(merchant: Merchant, hasDeal: boolean, isFresh: boolean, count = 1) {
   const el = document.createElement('button');
   el.type = 'button';
   const sector = sectorIdForCategory(merchant.category);
   el.className = `qapla-drop ${hasDeal ? 'is-deal' : ''} ${isFresh ? 'is-fresh' : ''} ${merchant.is_featured ? 'is-vip' : ''} is-${sector}`;
-  el.setAttribute('aria-label', merchant.name);
+  el.setAttribute('aria-label', merchant.is_verified ? `${merchant.name}, onaylı firma` : merchant.name);
   el.innerHTML = `
     <span class="qapla-drop-orbit" aria-hidden="true"></span>
     <span class="qapla-drop-body" aria-hidden="true"></span>
     <span class="qapla-drop-core" aria-hidden="true">${SECTOR_PIN_ICONS[sector]}</span>
+    ${merchant.is_verified ? '<span aria-hidden="true" style="position:absolute;right:-2px;top:6px;width:14px;height:14px;border-radius:999px;background:#10b981;color:#fff;font-size:9px;line-height:14px;font-weight:800;text-align:center;box-shadow:0 0 0 2px #fff">✓</span>' : ''}
+    ${count > 1 ? `<span aria-hidden="true" style="position:absolute;left:-2px;top:6px;min-width:14px;height:14px;padding:0 3px;border-radius:999px;background:#10241f;color:#fff;font-size:9px;line-height:14px;font-weight:800;text-align:center;box-shadow:0 0 0 2px #fff">${count}</span>` : ''}
   `;
   return el;
 }

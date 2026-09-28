@@ -1,8 +1,10 @@
 import { assertCouponGpsNearMerchant } from '@/lib/couponLocation';
 import { hasValidCoords } from '@/lib/geo';
+import { fetchCompanyList } from '@/lib/companyQuery';
+import { campaignWindowOpen } from '@/lib/campaignMap';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { loadMyProfile } from '@/lib/auth';
-import { attachCompanies, decrementCampaignStockAction, listAdminCampaigns, listAdminCompanies } from '@/lib/actions/admin';
+import { attachCompanies, decrementCampaignStockAction, listAdminCampaigns } from '@/lib/actions/admin';
 import {
   CAMPAIGN_COOLDOWN_MS,
   type CampaignEligibility,
@@ -157,17 +159,38 @@ function localEligibility(campaignId: string, userId: string): CampaignEligibili
   };
 }
 
+function isRegisteredId(id: string | null | undefined) {
+  const value = String(id ?? '');
+  return Boolean(value) && !value.startsWith('demo-');
+}
+
 export async function listCompaniesAction(): Promise<Company[]> {
-  return listAdminCompanies();
+  if (!isSupabaseConfigured) return [];
+  const data = await fetchCompanyList();
+  let rows = data.filter((row) => isRegisteredId(row.id) && String(row.name ?? '').trim());
+  const visible = await supabase.rpc('list_public_company_ids');
+  if (!visible.error && Array.isArray(visible.data)) {
+    const ids = new Set(
+      (visible.data as Array<{ id?: string } | string>).map((item) => (
+        String(typeof item === 'string' ? item : item?.id ?? '')
+      )),
+    );
+    rows = rows.filter((row) => ids.has(row.id));
+  }
+  return rows;
 }
 
 export async function listCampaignsAction(): Promise<CampaignWithCompany[]> {
+  if (isSupabaseConfigured) {
+    void supabase.rpc('archive_expired_campaigns');
+  }
   const [companies, campaigns] = await Promise.all([
-    listAdminCompanies(),
+    listCompaniesAction(),
     listAdminCampaigns(),
   ]);
+  const registered = new Set(companies.map((item) => item.id).filter(isRegisteredId));
   return attachCompanies(
-    campaigns.filter((item) => item.is_active),
+    campaigns.filter((item) => item.is_active && campaignWindowOpen(item.created_at) && isRegisteredId(item.id) && registered.has(item.company_id)),
     companies,
   );
 }

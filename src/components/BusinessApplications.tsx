@@ -10,10 +10,11 @@ export function BusinessApplicationsPanel({
 }: {
   rows: BusinessApplication[];
   busy: boolean;
-  onApprove: (row: BusinessApplication) => void;
+  onApprove: (row: BusinessApplication, pilot: boolean) => void;
   onReject: (row: BusinessApplication) => void;
 }) {
   const [filter, setFilter] = useState<'pending' | 'all'>('pending');
+  const [pilotIds, setPilotIds] = useState<Record<string, boolean>>({});
   const list = rows.filter((item) => filter === 'all' || item.status === 'pending');
 
   return (
@@ -54,12 +55,28 @@ export function BusinessApplicationsPanel({
             <p className="text-xs text-gray-500">{row.email}</p>
             <p className="mt-1 text-xs text-gray-500">{row.address}</p>
             <p className="mt-1 text-[11px] text-gray-400">{row.tax_office} · {row.tax_number}</p>
+            {row.is_pilot_firm ? (
+              <p className="mt-2 text-[11px] font-bold text-mint-700">Pilot firma · 2 ay ücretsiz</p>
+            ) : null}
             {row.status === 'pending' ? (
-              <div className="mt-3 flex gap-2">
+              <div className="mt-3 space-y-2">
+                <label className="flex items-start gap-2 rounded-2xl bg-mint-50 px-3 py-2 text-xs font-bold text-mint-800">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={Boolean(pilotIds[row.id])}
+                    onChange={(event) => setPilotIds((current) => ({ ...current, [row.id]: event.target.checked }))}
+                  />
+                  <span>
+                    Pilot Firma (2 Ay Ücretsiz)
+                    <span className="mt-0.5 block font-semibold text-mint-600">İşaretlenirse bitiş bugünden 60 gün sonrası olur. Bu sürede ödeme ekranı açılmaz.</span>
+                  </span>
+                </label>
+              <div className="flex gap-2">
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => onApprove(row)}
+                  onClick={() => onApprove(row, Boolean(pilotIds[row.id]))}
                   className="flex flex-1 items-center justify-center gap-1 rounded-2xl bg-mint-600 py-2.5 text-xs font-extrabold text-white disabled:opacity-50"
                 >
                   {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
@@ -73,6 +90,7 @@ export function BusinessApplicationsPanel({
                 >
                   <X className="h-3.5 w-3.5" /> Reddet
                 </button>
+              </div>
               </div>
             ) : null}
           </article>

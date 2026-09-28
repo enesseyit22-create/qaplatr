@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { subscribeTables } from '@/lib/live';
-import { countFollowers } from '@/lib/follows';
+import { countFollowers, countFollowersRemote } from '@/lib/follows';
 
 export type CompanyFollower = {
   user_id: string;
@@ -9,7 +9,7 @@ export type CompanyFollower = {
   followed_at: string;
 };
 
-export function useCompanyFollowers(companyId: string) {
+export function useCompanyFollowers(companyId: string, canViewList = false) {
   const [followers, setFollowers] = useState<CompanyFollower[]>([]);
   const [count, setCount] = useState(() => countFollowers(companyId));
 
@@ -27,42 +27,60 @@ export function useCompanyFollowers(companyId: string) {
         setCount(countFollowers(companyId));
         return;
       }
-      const [{ data, error }, counted] = await Promise.all([
-        supabase.rpc('list_company_followers', { p_company_id: companyId }),
-        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('business_id', companyId),
-      ]);
+      const counted = await supabase.rpc('count_company_followers', { p_company_id: companyId });
+      const listed = canViewList
+        ? await supabase.rpc('list_company_followers', { p_company_id: companyId })
+        : { data: [], error: null };
       if (stopped) return;
-      if (!error && Array.isArray(data)) {
-        setFollowers(data.filter((row) => row && typeof row === 'object').map((row) => {
+    if (!counted.error && counted.data != null && counted.data !== '') {
+      const next = Number(counted.data);
+      if (Number.isFinite(next)) setCount(next);
+    } else {
+        const fallback = await countFollowersRemote(companyId);
+        if (!stopped) setCount(fallback);
+      }
+      if (canViewList && !listed.error && Array.isArray(listed.data)) {
+        const rows = listed.data.filter((row) => row && typeof row === 'object').map((row) => {
           const item = row as Record<string, unknown>;
           return {
             user_id: String(item.user_id ?? ''),
             display_name: String(item.display_name ?? 'Üye'),
             followed_at: String(item.followed_at ?? ''),
           };
-        }));
+        });
+        setFollowers(rows);
+        if (counted.error) setCount(rows.length);
+      } else if (!canViewList) {
+        setFollowers([]);
       }
-      if (!counted.error && counted.count != null) setCount(counted.count);
-      else if (!error && Array.isArray(data)) setCount(data.length);
     };
 
     void load();
     const stop = subscribeTables(['follows'], (change) => {
-      const id = String(change?.new?.company_id ?? change?.old?.company_id ?? '');
+      const next = change?.new as { business_id?: string; company_id?: string } | undefined;
+      const prev = change?.old as { business_id?: string; company_id?: string } | undefined;
+      const id = String(next?.business_id ?? prev?.business_id ?? next?.company_id ?? prev?.company_id ?? '');
       if (!id || id === companyId) void load();
     });
     return () => {
       stopped = true;
       stop();
     };
-  }, [companyId]);
+  }, [canViewList, companyId]);
 
   return { count, followers };
 }
 
-export function CompanyFollowers({ companyId }: { companyId: string }) {
-  const { count, followers } = useCompanyFollowers(companyId);
+export function CompanyFollowers({
+  companyId,
+  canViewList = false,
+}: {
+  companyId: string;
+  canViewList?: boolean;
+}) {
+  const { count, followers } = useCompanyFollowers(companyId, canViewList);
   const [open, setOpen] = useState(false);
+  if (!canViewList) return null;
 
   return (
     <div className="mx-5 mt-3">

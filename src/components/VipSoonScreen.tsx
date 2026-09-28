@@ -14,16 +14,15 @@ function copyFor(audience: VipAudience, name: string, firm: string) {
       subtitle: firm ? `${firm} vitrini` : 'İşletmene özel üyelik',
       pageSub: 'Firmana özel QAP üyelik.',
       body: firm
-        ? `${firm} için QAP VIP, Keşfet ve hikayede öne çıkmanı sağlar. Vitrin altın rozetli olur. Standartta günde 1 gönderi ve 1 kampanya vardır; VIP paketlerde 3 veya 5 paylaşım sonra açılır.`
+        ? `${firm} için Standard 599 TL/ay, Premium lansman 1299 TL/ay. Premium ile hikaye ve bölgesel bildirim açılır.`
         : 'QAP VIP firmana bağlıdır. Altın rozet, hikaye, bildirim ve günlük paylaşım kotası bu üyeliğe özeldir.',
       items: [
         'Standart hesap: günde 1 gönderi ve 1 kampanya',
-        'VIP paketlerde günde 3 veya 5 paylaşım (yakında)',
-        'Hikaye yayını ve 1 km çevresine bildirim',
-        'Firmana özel altın QAP rozeti',
-        'Keşfet’te öncelikli sıralama',
+        'Premium: günde 5 paylaşım, hikaye ve haftada 2 bölgesel bildirim',
+        'Lansman 1299 TL/ay, normal fiyat 1599 TL/ay',
+        'Standard: 599 TL/ay, günde 1 kampanya',
       ],
-      foot: 'Firma üyeliği yakında',
+      foot: 'Premium lansman 1299 TL/ay',
     };
   }
   if (audience === 'user') {

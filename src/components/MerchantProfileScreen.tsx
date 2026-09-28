@@ -4,6 +4,7 @@ import { useAuth } from '@/lib/authContext';
 import {
   bindMerchantSession,
   fetchMerchantCompany,
+  readActiveCompanyId,
   listMerchantCampaigns,
   listMerchantRedemptions,
   updateMerchantProfileAction,
@@ -12,14 +13,17 @@ import type { Campaign, Company, UserRedemption } from '@/lib/campaigns';
 import { countFavoritesForCompany } from '@/lib/favorites';
 import {
   addCompanyPost,
+  uploadPostImage,
   dailyPostLimitReached,
   deleteCompanyPost,
   FREE_DAILY_POST_LIMIT,
   postsTodayCount,
   useCompanyPosts,
 } from '@/lib/posts';
+import { planLimits, planTierOf } from '@/lib/plans';
+import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { storiesForCompany } from '@/lib/stories';
-import { fileToDataUrl, getMsRemaining } from '@/lib/utils';
+import { getMsRemaining } from '@/lib/utils';
 import { loadBusinessForUser, type BusinessApplication } from '@/lib/businesses';
 import { subscribeTables } from '@/lib/live';
 import { BusinessPendingScreen } from '@/components/BusinessPendingScreen';
@@ -54,21 +58,20 @@ export function MerchantProfileScreen({
     bindMerchantSession(profile ?? null);
     if (!silent) setLoading(true);
     try {
-      const nextApplication = profile?.id
-        ? await loadBusinessForUser(profile.id, profile.email).catch(() => null)
-        : null;
+      const [nextApplication, nextCompany] = await Promise.all([
+        profile?.id ? loadBusinessForUser(profile.id, profile.email).catch(() => null) : Promise.resolve(null),
+        fetchMerchantCompany(profile ?? null),
+      ]);
       setApplication(nextApplication);
-      const nextCompany = await fetchMerchantCompany(profile ?? null);
       setCompany(nextCompany);
       if (!nextCompany || nextApplication?.status === 'pending' || nextApplication?.status === 'rejected') {
         setCampaigns([]);
         setRedemptions([]);
         return;
       }
-      const [nextCampaigns, nextRedemptions] = await Promise.all([
-        listMerchantCampaigns(nextCompany.id).catch(() => [] as Campaign[]),
-        listMerchantRedemptions(nextCompany.id).catch(() => [] as UserRedemption[]),
-      ]);
+      setLoading(false);
+      const nextCampaigns = await listMerchantCampaigns(nextCompany.id).catch(() => [] as Campaign[]);
+      const nextRedemptions = await listMerchantRedemptions(nextCompany.id, nextCampaigns.map((item) => item.id)).catch(() => [] as UserRedemption[]);
       setCampaigns(nextCampaigns ?? []);
       setRedemptions(nextRedemptions ?? []);
     } catch (err) {
@@ -132,12 +135,15 @@ export function MerchantProfileScreen({
               setBusy(true);
               setError(null);
               try {
-                await updateMerchantProfileAction(draft);
+                const saved = await updateMerchantProfileAction(draft);
+                setCompany(saved);
                 setNotice('Profil kaydedildi.');
                 setEditing(false);
                 await refresh(true);
+                setCompany((current) => current ? { ...current, logo_url: saved.logo_url, cover_url: saved.cover_url } : saved);
                 onChanged?.();
               } catch (err) {
+                console.warn('Profil kaydedilemedi', err);
                 setError(err instanceof Error ? err.message : 'Kaydedilemedi');
               } finally {
                 setBusy(false);
@@ -148,7 +154,7 @@ export function MerchantProfileScreen({
       ) : null}
 
       <div className="mt-3 space-y-3">
-        {onVip ? (
+        {planLimits(planTierOf(company)).vip ? null : onVip ? (
           <button type="button" onClick={onVip} className="w-full text-left">
             <VipSoonCard compact audience="merchant" companyName={company.name} />
           </button>
@@ -198,13 +204,23 @@ export function MerchantPosts({ companyId }: { companyId: string }) {
   const [caption, setCaption] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const limitHit = dailyPostLimitReached(companyId, posts);
+  const [dailyLimit, setDailyLimit] = useState(FREE_DAILY_POST_LIMIT);
+  const limitHit = dailyPostLimitReached(companyId, posts, dailyLimit);
+  useEffect(() => {
+    let live = true;
+    if (!isSupabaseConfigured || !companyId) return () => { live = false; };
+    void supabase.from('companies').select('plan_tier, is_featured').eq('id', companyId).maybeSingle().then(({ data, error }) => {
+      if (!live || error || !data) return;
+      setDailyLimit(planLimits(planTierOf(data)).dailyPosts);
+    });
+    return () => { live = false; };
+  }, [companyId]);
 
   return (
     <section className="space-y-2 rounded-3xl border border-mint-100 bg-white p-4">
       <p className="text-sm font-extrabold text-mint-800">Gönderiler</p>
       <p className="text-xs text-gray-400">
-        VIP olmadan günde {FREE_DAILY_POST_LIMIT} paylaşım. Bugün {Math.min(postsTodayCount(companyId, posts), FREE_DAILY_POST_LIMIT)}/{FREE_DAILY_POST_LIMIT} kullanıldı.
+        {dailyLimit <= 1 ? 'Standart pakette' : 'Premium pakette'} günde {dailyLimit} paylaşım. Bugün {Math.min(postsTodayCount(companyId, posts), dailyLimit)}/{dailyLimit} kullanıldı.
       </p>
       <form
         className="space-y-2"
@@ -218,12 +234,17 @@ export function MerchantPosts({ companyId }: { companyId: string }) {
           setBusy(true);
           setError(null);
           try {
-            const image_url = await fileToDataUrl(file, 1080);
-            await addCompanyPost({ company_id: companyId, image_url, caption });
+            const fromUrl = new URLSearchParams(window.location.search).get('company')
+              || new URLSearchParams(window.location.hash.replace(/^#/, '')).get('company')
+              || '';
+            const activeCompanyId = companyId || readActiveCompanyId() || fromUrl;
+            const image_url = await uploadPostImage(activeCompanyId, file);
+            await addCompanyPost({ company_id: activeCompanyId, image_url, caption });
             setCaption('');
             event.currentTarget.reset();
           } catch (err) {
-            setError(err instanceof Error ? err.message : 'Yüklenemedi');
+            console.warn('Gönderi paylaşılamadı', err);
+            setError(err instanceof Error && err.message ? err.message : 'Görsel yüklenemedi. Tekrar deneyin.');
           } finally {
             setBusy(false);
           }

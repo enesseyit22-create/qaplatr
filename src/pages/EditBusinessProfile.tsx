@@ -3,9 +3,10 @@ import { Loader2 } from 'lucide-react';
 import { COMPANY_CATEGORIES } from '@/lib/sectors';
 import type { Company } from '@/lib/campaigns';
 import { LocationMapPicker } from '@/components/maps/LocationMapPicker';
-import { reverseNominatim } from '@/lib/address';
+import { formatDetailedAddress, geocodeDetailedAddress, reverseNominatim } from '@/lib/address';
 import { ISTANBUL_CENTER } from '@/lib/mapTiles';
 import { fileToDataUrl } from '@/lib/utils';
+import { uploadCompanyImage } from '@/lib/companyImages';
 
 export type BusinessProfileDraft = {
   name?: string;
@@ -38,12 +39,19 @@ export function EditBusinessProfile({
   const [name, setName] = useState(company.name);
   const [category, setCategory] = useState(company.category);
   const [address, setAddress] = useState(company.address);
+  const [city, setCity] = useState('');
+  const [district, setDistrict] = useState('');
+  const [neighborhood, setNeighborhood] = useState('');
+  const [street, setStreet] = useState(company.address);
+  const [door, setDoor] = useState('');
   const [phone, setPhone] = useState(company.phone ?? '');
   const [whatsapp, setWhatsapp] = useState(company.whatsapp ?? '');
   const [email, setEmail] = useState(company.email ?? company.owner_email ?? '');
   const [description, setDescription] = useState(company.description ?? '');
   const [logo, setLogo] = useState<string | null>(company.logo_url ?? null);
   const [cover, setCover] = useState<string | null>(company.cover_url ?? null);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [coverFile, setCoverFile] = useState<File | null>(null);
   const [latitude, setLatitude] = useState(
     Number.isFinite(company.latitude) ? company.latitude : ISTANBUL_CENTER.lat,
   );
@@ -55,12 +63,19 @@ export function EditBusinessProfile({
     setName(company.name);
     setCategory(company.category);
     setAddress(company.address);
+    setStreet(company.address);
+    setCity('');
+    setDistrict('');
+    setNeighborhood('');
+    setDoor('');
     setPhone(company.phone ?? '');
     setWhatsapp(company.whatsapp ?? '');
     setEmail(company.email ?? company.owner_email ?? '');
     setDescription(company.description ?? '');
     setLogo(company.logo_url ?? null);
     setCover(company.cover_url ?? null);
+    setLogoFile(null);
+    setCoverFile(null);
     setLatitude(Number.isFinite(company.latitude) ? company.latitude : ISTANBUL_CENTER.lat);
     setLongitude(Number.isFinite(company.longitude) ? company.longitude : ISTANBUL_CENTER.lng);
   }, [
@@ -84,19 +99,45 @@ export function EditBusinessProfile({
       className="space-y-3 rounded-3xl border border-mint-100 bg-white p-4"
       onSubmit={async (event) => {
         event.preventDefault();
+        const parts = { city, district, neighborhood, street, door };
+        const composed = [city, district, neighborhood, street, door].some((part) => part.trim())
+          ? formatDetailedAddress(parts)
+          : address;
+        let nextLat = latitude;
+        let nextLng = longitude;
+        if (city.trim() && district.trim() && street.trim()) {
+          const point = await geocodeDetailedAddress(parts);
+          if (point) {
+            nextLat = point.latitude;
+            nextLng = point.longitude;
+          }
+        }
+        let logoUrl = logo;
+        let coverUrl = cover;
+        try {
+          if (logoFile) logoUrl = await uploadCompanyImage(company.id, logoFile, 'logo');
+          if (coverFile) coverUrl = await uploadCompanyImage(company.id, coverFile, 'cover');
+        } catch (err) {
+          console.warn('Profil görseli kaydedilemedi', err);
+          throw err;
+        }
         await onSubmit({
           name,
           category,
-          address,
+          address: composed,
           phone,
           whatsapp,
           email,
           description,
-          latitude,
-          longitude,
-          logo_url: logo,
-          cover_url: cover,
+          latitude: nextLat,
+          longitude: nextLng,
+          logo_url: logoUrl,
+          cover_url: coverUrl,
         });
+        setLogo(logoUrl);
+        setCover(coverUrl);
+        setLogoFile(null);
+        setCoverFile(null);
       }}
     >
       <p className="text-sm font-extrabold text-mint-800">Profili düzenle</p>
@@ -113,7 +154,8 @@ export function EditBusinessProfile({
           onChange={(event) => {
             const file = event.target.files?.[0];
             if (!file) return;
-            void fileToDataUrl(file, 1280).then(setCover);
+            void fileToDataUrl(file, 1280).then(setCover).catch((err) => console.warn('Kapak önizlemesi okunamadı', err));
+            setCoverFile(file);
           }}
         />
       </label>
@@ -131,7 +173,8 @@ export function EditBusinessProfile({
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (!file) return;
-              void fileToDataUrl(file, 512).then(setLogo);
+              void fileToDataUrl(file, 512).then(setLogo).catch((err) => console.warn('Logo önizlemesi okunamadı', err));
+              setLogoFile(file);
             }}
           />
         </label>
@@ -153,8 +196,24 @@ export function EditBusinessProfile({
         </select>
       </label>
       <label className="block text-[11px] font-bold text-mint-700">
-        Adres
-        <textarea className={`${fieldClass} mt-1`} rows={2} value={address} onChange={(e) => setAddress(e.target.value)} />
+        İl
+        <input className={`${fieldClass} mt-1`} value={city} onChange={(e) => setCity(e.target.value)} placeholder="Bursa" />
+      </label>
+      <label className="block text-[11px] font-bold text-mint-700">
+        İlçe
+        <input className={`${fieldClass} mt-1`} value={district} onChange={(e) => setDistrict(e.target.value)} placeholder="Nilüfer" />
+      </label>
+      <label className="block text-[11px] font-bold text-mint-700">
+        Mahalle
+        <input className={`${fieldClass} mt-1`} value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)} />
+      </label>
+      <label className="block text-[11px] font-bold text-mint-700">
+        Cadde / Sokak
+        <input className={`${fieldClass} mt-1`} value={street} onChange={(e) => setStreet(e.target.value)} />
+      </label>
+      <label className="block text-[11px] font-bold text-mint-700">
+        Bina / Kapı no
+        <input className={`${fieldClass} mt-1`} value={door} onChange={(e) => setDoor(e.target.value)} />
       </label>
       <div>
         <p className="text-[11px] font-bold text-mint-700">Haritadan konum</p>

@@ -1,4 +1,8 @@
 import { Capacitor } from '@capacitor/core';
+import { distanceMeters } from '@/lib/geo';
+
+/** Harita ve adres sorgusu ancak bu kadar yer değişince yenilenir. */
+export const LOCATION_MOVE_METERS = 15;
 
 export type LocationFailure = 'denied' | 'unavailable' | 'timeout' | 'unsupported';
 
@@ -86,6 +90,106 @@ export async function requestDeviceLocation(): Promise<DeviceLocation> {
   } catch {
     return { ok: false, reason: 'unavailable' };
   }
+}
+
+type Coords = { latitude: number; longitude: number };
+
+let moveAnchor: Coords | null = null;
+
+export function movedEnough(next: Coords, minimumMeters = LOCATION_MOVE_METERS) {
+  if (!moveAnchor) return true;
+  return distanceMeters(moveAnchor.latitude, moveAnchor.longitude, next.latitude, next.longitude) >= minimumMeters;
+}
+
+export function noteLocationAnchor(next: Coords) {
+  moveAnchor = { latitude: next.latitude, longitude: next.longitude };
+}
+
+function publishMove(
+  next: Coords,
+  onMove: (coords: Coords) => void,
+  force = false,
+) {
+  if (!force && !movedEnough(next)) return;
+  noteLocationAnchor(next);
+  onMove(next);
+}
+
+export function watchSignificantMoves(
+  onMove: (coords: Coords) => void,
+  onError?: (reason: LocationFailure) => void,
+): () => void {
+  let stopped = false;
+  let reported = false;
+  let webWatch = 0;
+  let nativeWatch: string | null = null;
+  const fail = (reason: LocationFailure) => {
+    if (stopped || reported || moveAnchor) return;
+    reported = true;
+    onError?.(reason);
+  };
+
+  const take = (latitude: number, longitude: number) => {
+    if (stopped || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+    publishMove({ latitude, longitude }, onMove);
+  };
+
+  if (Capacitor.isNativePlatform()) {
+    void import('@capacitor/geolocation').then(async ({ Geolocation }) => {
+      if (stopped) return;
+      try {
+        const status = await Geolocation.requestPermissions();
+        const granted = status.location === 'granted' || status.coarseLocation === 'granted';
+        if (!granted) {
+          fail('denied');
+          return;
+        }
+        nativeWatch = await Geolocation.watchPosition(
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 },
+          (position, error) => {
+            if (stopped) return;
+            if (error || !position) {
+              fail(asFailure(error));
+              return;
+            }
+            take(position.coords.latitude, position.coords.longitude);
+          },
+        );
+      } catch (error) {
+        fail(asFailure(error));
+      }
+    }).catch(() => fail('unavailable'));
+
+    return () => {
+      stopped = true;
+      if (!nativeWatch) return;
+      const id = nativeWatch;
+      nativeWatch = null;
+      void import('@capacitor/geolocation').then(({ Geolocation }) => {
+        void Geolocation.clearWatch({ id });
+      }).catch(() => undefined);
+    };
+  }
+
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    fail('unsupported');
+    return () => { stopped = true; };
+  }
+
+  webWatch = navigator.geolocation.watchPosition(
+    (position) => take(position.coords.latitude, position.coords.longitude),
+    (error) => {
+      if (error.code === error.PERMISSION_DENIED) fail('denied');
+      else if (error.code === error.TIMEOUT) fail('timeout');
+      else fail('unavailable');
+    },
+    { enableHighAccuracy: false, timeout: 15000, maximumAge: 20000 },
+  );
+
+  return () => {
+    stopped = true;
+    if (webWatch) navigator.geolocation.clearWatch(webWatch);
+  };
 }
 
 export function locationHint(reason: LocationFailure | null) {

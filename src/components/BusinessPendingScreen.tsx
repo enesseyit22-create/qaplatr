@@ -5,11 +5,13 @@ export function BusinessPendingScreen({
   onBack,
   onSignOut,
   companyName,
+  planNote,
   loading = false,
 }: {
   onBack: () => void;
   onSignOut?: () => void;
   companyName?: string | null;
+  planNote?: string | null;
   loading?: boolean;
 }) {
   if (loading) {
@@ -68,6 +70,11 @@ export function BusinessPendingScreen({
         <div className="mt-6 flex items-center gap-2 rounded-2xl bg-white px-3 py-2 text-xs font-semibold text-mint-700 shadow-sm">
           <CheckCircle2 className="h-4 w-4 text-mint-500" /> Kayıt sıraya alındı
         </div>
+        {planNote ? (
+          <p className="mt-3 max-w-sm rounded-2xl bg-white px-3 py-2 text-xs font-semibold text-mint-800 shadow-sm">
+            Abonelik planın: {planNote}
+          </p>
+        ) : null}
         <button type="button" onClick={onSignOut ?? onBack} className="btn-primary mt-8 w-full max-w-sm py-3.5">
           {onSignOut ? 'Çıkış yap' : 'Tamam'}
         </button>

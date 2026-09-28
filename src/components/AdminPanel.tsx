@@ -2,21 +2,29 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowLeft, Loader2, MapPin, Plus, Trash2, Building2, AlertCircle, LogOut,
-  Menu, X, Users, Shield, Ticket, Heart, ChevronDown, ImagePlus, Search, KeyRound, Bell,
+  Menu, X, Users, Shield, Ticket, Heart, ChevronDown, ImagePlus, Search, KeyRound, Bell, BadgeCheck,
 } from 'lucide-react';
 import {
   createCampaignAction,
   createCompanyAction,
   deleteCampaignAction,
   deleteCompanyAction,
+  blockCompanyAccessAction,
   listAdminCampaigns,
   listAdminCompanies,
   setCampaignActiveAction,
   setCompanyFeaturedAction,
   updateCampaignAction,
   updateCompanyProfileAction,
+  setCompanyVerifiedAction,
+  setCompanyPlanAction,
+  setCompanyPushQuotaAction,
+  setCompanyTermAction,
+  setMemberVipAction,
+  MissingCompanyError,
 } from '@/lib/actions/admin';
 import { deleteAdminUser, listAdminRedemptions, listAdminUsers, upsertAdminUser } from '@/lib/actions/users';
+import { rememberActiveCompany } from '@/lib/actions/merchant';
 import { applicationFromRow, BUSINESSES_EVENT, listBusinessApplications, setBusinessStatusAction, type BusinessApplication } from '@/lib/businesses';
 import { BusinessApplicationsPanel } from '@/components/BusinessApplications';
 import type { AppUser, Campaign, Company, UserRedemption } from '@/lib/campaigns';
@@ -28,21 +36,26 @@ import { StoryStudio } from '@/components/StoryStudio';
 import { AdminBusinessDetail } from '@/pages/admin/AdminBusinesses';
 import { AdminCampaignList } from '@/components/AdminCampaigns';
 import { AdminVipDesk } from '@/components/AdminVipDesk';
+import { AdminBannerDesk } from '@/components/AdminBannerDesk';
+import { AdminShowcaseQueue } from '@/components/AdminShowcaseQueue';
+import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { canCompanyPostStories, setCompanyStoryPermission } from '@/lib/stories';
 import { subscribeTables } from '@/lib/live';
+import { applyCampaignList, subscribeCampaignTable } from '@/lib/campaignLive';
 import { useAuth } from '@/lib/authContext';
 import { welcomeLine } from '@/lib/auth';
 import { listFavoriteIds } from '@/lib/favorites';
 import { inspectCouponCode, approveCouponCode, type CouponInspect } from '@/lib/couponTickets';
 import { PanelTopBar, panelChip, panelIconBtn } from '@/components/TabPageShell';
 import { AdminControlBoundary, AdminControlDesk } from '@/components/AdminControlDesk';
+import { SafeCenterModal } from '@/components/SafeCenterModal';
 import { deleteAppNotice, isAdminInboxNotice, useAppNotices } from '@/lib/notices';
 
 const CATEGORIES = COMPANY_CATEGORIES;
 const DEFAULT_LAT = 40.9888;
 const DEFAULT_LNG = 29.0288;
 
-type Tab = 'list' | 'users' | 'stories' | 'codes' | 'controls' | 'company' | 'apps' | 'vip' | 'campaigns';
+type Tab = 'list' | 'users' | 'stories' | 'codes' | 'controls' | 'company' | 'apps' | 'vip' | 'campaigns' | 'banners';
 
 export function AdminPanelScreen({
   onBack,
@@ -69,12 +82,14 @@ export function AdminPanelScreen({
   const [deleteUserTarget, setDeleteUserTarget] = useState<AppUser | null>(null);
   const [firmQuery, setFirmQuery] = useState('');
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
+  useEffect(() => { rememberActiveCompany(selectedCompanyId); }, [selectedCompanyId]);
   const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
   const [permTick, setPermTick] = useState(0);
   const [couponCode, setCouponCode] = useState('');
   const [couponInspect, setCouponInspect] = useState<CouponInspect | null>(null);
   const { profile, user, signOut } = useAuth();
   const pendingRef = useRef<number | null>(null);
+  const refreshGen = useRef(0);
   const seenNoticeRef = useRef<string | null>(null);
   const [notesOpen, setNotesOpen] = useState(false);
   const [openNoticeId, setOpenNoticeId] = useState<string | null>(null);
@@ -88,16 +103,20 @@ export function AdminPanelScreen({
   }, [initialTab]);
 
   const refresh = useCallback(async (silent = false) => {
+    const ticket = ++refreshGen.current;
     if (!silent) setLoading(true);
     try {
-      const [nextCompanies, nextCampaigns, nextUsers, nextRedemptions, nextApps] = await Promise.all([
-        listAdminCompanies(),
+      const nextCompanies = await listAdminCompanies();
+      if (ticket !== refreshGen.current) return;
+      setCompanies(nextCompanies);
+      setLoading(false);
+      const [nextCampaigns, nextUsers, nextRedemptions, nextApps] = await Promise.all([
         listAdminCampaigns(),
         listAdminUsers(),
         listAdminRedemptions(),
         listBusinessApplications(),
       ]);
-      setCompanies(nextCompanies);
+      if (ticket !== refreshGen.current) return;
       setCampaigns(nextCampaigns);
       setUsers(nextUsers);
       setRedemptions(nextRedemptions);
@@ -110,9 +129,10 @@ export function AdminPanelScreen({
       pendingRef.current = pending;
       setError(null);
     } catch (err) {
+      if (ticket !== refreshGen.current) return;
       setError(err instanceof Error ? err.message : 'Liste yüklenemedi');
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && ticket === refreshGen.current) setLoading(false);
     }
   }, []);
 
@@ -122,9 +142,25 @@ export function AdminPanelScreen({
 
   useEffect(() => {
     const stop = subscribeTables(
-      ['companies', 'campaigns', 'businesses', 'profiles', 'app_notices'],
+      ['companies', 'campaigns', 'businesses', 'profiles', 'app_notices', 'coupon_tickets', 'user_redemptions'],
       (change) => {
-        if (change?.table === 'businesses' && change.new) {
+        if (change?.eventType === 'DELETE') {
+          const id = String(change.old?.id ?? '');
+          if (id && change.table === 'companies') {
+            setCompanies((current) => current.filter((item) => item.id !== id));
+            setCampaigns((current) => current.filter((item) => item.company_id !== id));
+          }
+          if (id && change.table === 'campaigns') {
+            setCampaigns((current) => current.filter((item) => item.id !== id));
+          }
+          if (id && change.table === 'businesses') {
+            setApplications((current) => current.filter((item) => item.id !== id));
+          }
+          if (id && change.table === 'profiles') {
+            setUsers((current) => current.filter((item) => item.id !== id));
+          }
+        }
+        if (change?.table === 'businesses' && change.new && change.eventType !== 'DELETE') {
           const row = applicationFromRow(change.new);
           if (row) {
             setApplications((current) => {
@@ -142,6 +178,9 @@ export function AdminPanelScreen({
         void refresh(true);
       },
     );
+    const stopCampaigns = subscribeCampaignTable((change) => {
+      setCampaigns((current) => applyCampaignList(current, change));
+    });
     const onLocal = (event: Event) => {
       const row = (event as CustomEvent<BusinessApplication>).detail;
       if (!row?.id) return;
@@ -160,6 +199,7 @@ export function AdminPanelScreen({
     window.addEventListener(BUSINESSES_EVENT, onLocal);
     return () => {
       stop();
+      stopCampaigns();
       window.removeEventListener(BUSINESSES_EVENT, onLocal);
     };
   }, [refresh]);
@@ -216,6 +256,7 @@ export function AdminPanelScreen({
           {([
             [['list', 'Firmalar'], ['users', 'Kullanıcılar'], ['apps', 'Başvuru'], ['campaigns', 'Kampanya']],
             [['stories', 'Hikaye'], ['codes', 'Kod'], ['vip', 'VIP'], ['controls', 'Kontrol']],
+            [['banners', 'Vitrin']],
           ] as const).map((row, index) => (
             <div key={index} className="flex gap-1">
               {row.map(([id, label]) => (
@@ -356,11 +397,10 @@ export function AdminPanelScreen({
                 setBusy(true);
                 setError(null);
                 try {
-                  await setCompanyFeaturedAction(company.id, false);
-                  const live = campaigns.filter((item) => item.company_id === company.id && item.is_active);
-                  await Promise.all(live.map((item) => setCampaignActiveAction(item.id, false)));
+                  await blockCompanyAccessAction(company.id);
                   if (canCompanyPostStories(company.id)) setCompanyStoryPermission(company.id, false);
                   setPermTick((value) => value + 1);
+                  setSelectedCompanyId(null);
                   await refresh();
                   onChanged?.();
                   setNotice(`${company.name} durduruldu.`);
@@ -440,6 +480,35 @@ export function AdminPanelScreen({
               onQuery={setFirmQuery}
               onOpen={(company) => setSelectedCompanyId(company.id)}
               onAdd={() => setTab('company')}
+              onVerify={async (company, verified) => {
+                setCompanies((rows) => rows.map((row) => (row.id === company.id ? { ...row, is_verified: verified } : row)));
+                try {
+                  await setCompanyVerifiedAction(company.id, verified);
+                } catch (err) {
+                  setCompanies((rows) => rows.map((row) => (row.id === company.id ? { ...row, is_verified: company.is_verified } : row)));
+                  throw err;
+                }
+              }}
+              onPlan={async (company, tier) => {
+                setCompanies((rows) => rows.map((row) => (row.id === company.id ? { ...row, plan_tier: tier } : row)));
+                try {
+                  await setCompanyPlanAction(company.id, tier);
+                } catch (err) {
+                  setCompanies((rows) => (err instanceof MissingCompanyError
+                    ? rows.filter((row) => row.id !== company.id)
+                    : rows.map((row) => (row.id === company.id ? company : row))));
+                  throw err;
+                }
+              }}
+              onQuota={async (company, quota) => {
+                setCompanies((rows) => rows.map((row) => (row.id === company.id ? { ...row, push_quota_override: quota } : row)));
+                try {
+                  await setCompanyPushQuotaAction(company.id, quota);
+                } catch (err) {
+                  setCompanies((rows) => rows.map((row) => (row.id === company.id ? company : row)));
+                  throw err;
+                }
+              }}
             />
           )
         ) : tab === 'campaigns' ? (
@@ -489,14 +558,14 @@ export function AdminPanelScreen({
           <BusinessApplicationsPanel
             rows={applications}
             busy={busy}
-            onApprove={async (row) => {
+            onApprove={async (row, pilot) => {
               setBusy(true);
               setError(null);
               try {
-                await setBusinessStatusAction(row.id, 'approved');
+                await setBusinessStatusAction(row.id, 'approved', { pilot });
                 await refresh();
                 onChanged?.();
-                setNotice(`${row.company_name} onaylandı. Firma paneli açıldı.`);
+                setNotice(pilot ? `${row.company_name} pilot firma olarak onaylandı. 2 ay ücretsiz.` : `${row.company_name} onaylandı. Firma paneli açıldı.`);
               } catch (err) {
                 setError(err instanceof Error ? err.message : 'Onaylanamadı');
               } finally {
@@ -527,7 +596,7 @@ export function AdminPanelScreen({
                 await createCompanyAction(input);
                 await refresh();
                 onChanged?.();
-                setNotice('Firma eklendi.');
+                setNotice(input.is_pilot_firm ? 'Pilot firma eklendi. 2 ay ücretsiz.' : 'Firma eklendi.');
                 setTab('list');
               } catch (err) {
                 setError(err instanceof Error ? err.message : 'Firma eklenemedi');
@@ -537,9 +606,53 @@ export function AdminPanelScreen({
             }}
           />
         ) : tab === 'stories' ? (
-          <StoryStudio actor="admin" allowPlatform companies={companies} onChanged={onChanged} />
+          <>
+            <AdminShowcaseQueue />
+            <StoryStudio actor="admin" allowPlatform companies={companies} onChanged={onChanged} />
+          </>
         ) : tab === 'vip' ? (
-          <AdminVipDesk />
+          <AdminVipDesk
+            companies={companies}
+            users={users}
+            onPlan={async (company, tier) => {
+              setCompanies((rows) => rows.map((row) => (row.id === company.id ? { ...row, plan_tier: tier } : row)));
+              try {
+                await setCompanyPlanAction(company.id, tier);
+              } catch (err) {
+                setCompanies((rows) => (err instanceof MissingCompanyError
+                  ? rows.filter((row) => row.id !== company.id)
+                  : rows.map((row) => (row.id === company.id ? company : row))));
+                throw err;
+              }
+            }}
+            onQuota={async (company, quota) => {
+              setCompanies((rows) => rows.map((row) => (row.id === company.id ? { ...row, push_quota_override: quota } : row)));
+              try {
+                await setCompanyPushQuotaAction(company.id, quota);
+              } catch (err) {
+                setCompanies((rows) => rows.map((row) => (row.id === company.id ? company : row)));
+                throw err;
+              }
+            }}
+            onTerm={async (company, endsAt) => {
+              setCompanies((rows) => rows.map((row) => (row.id === company.id ? { ...row, subscription_ends_at: endsAt } : row)));
+              try {
+                await setCompanyTermAction(company.id, endsAt);
+              } catch (err) {
+                setCompanies((rows) => rows.map((row) => (row.id === company.id ? company : row)));
+                throw err;
+              }
+            }}
+            onMemberVip={async (user, vip) => {
+              setUsers((rows) => rows.map((row) => (row.id === user.id ? { ...row, vip } : row)));
+              try {
+                await setMemberVipAction(user.id, vip);
+              } catch (err) {
+                setUsers((rows) => rows.map((row) => (row.id === user.id ? user : row)));
+                throw err;
+              }
+            }}
+          />
         ) : tab === 'codes' ? (
           <form
             className="space-y-3 rounded-3xl border border-mint-100 bg-white p-4"
@@ -616,6 +729,11 @@ export function AdminPanelScreen({
               </div>
             )}
           </form>
+        ) : tab === 'banners' ? (
+          <>
+            <AdminShowcaseQueue />
+            <AdminBannerDesk />
+          </>
         ) : tab === 'controls' ? (
           <AdminControlBoundary>
             <AdminControlDesk
@@ -712,7 +830,7 @@ export function AdminPanelScreen({
                         className="flex w-full items-center gap-2 border-t border-mint-50 px-3 py-2.5 text-left text-sm font-semibold text-mint-800 first:border-t-0"
                       >
                         <Heart className="h-3.5 w-3.5 text-rose-400" fill="currentColor" />
-                        {item.name}
+                        <span className="inline-flex min-w-0 items-center gap-1">{item.name}<VerifiedBadge verified={item.is_verified} /></span>
                       </button>
                     ))
                   )}
@@ -736,9 +854,8 @@ export function AdminPanelScreen({
       ) : null}
 
       {deleteTarget && (
-        <div className="fixed inset-0 z-[2100] flex items-end justify-center bg-black/70 px-4 pb-10 sm:items-center">
-          <button type="button" className="absolute inset-0" aria-label="Vazgeç" onClick={() => setDeleteTarget(null)} />
-          <div className="relative w-full max-w-sm rounded-4xl border border-mint-100 bg-white p-5 shadow-2xl">
+        <SafeCenterModal onClose={() => setDeleteTarget(null)} zIndex={2100}>
+          <div className="w-full rounded-4xl border border-mint-100 bg-white p-5 shadow-2xl">
             <h3 className="text-lg font-extrabold text-mint-900">Firmayı sil?</h3>
             <p className="mt-1 text-sm text-gray-500">
               <span className="font-semibold text-mint-800">{deleteTarget.name}</span> ve bağlı kampanyalar kalıcı olarak silinir.
@@ -753,11 +870,14 @@ export function AdminPanelScreen({
                   try {
                     await deleteCompanyAction(deleteTarget.id);
                     setDeleteTarget(null);
+                    setSelectedCompanyId(null);
                     await refresh();
                     onChanged?.();
                     setNotice('Firma silindi.');
                   } catch (err) {
-                    setError(err instanceof Error ? err.message : 'Silinemedi');
+                    const message = err instanceof Error ? err.message : 'Silinemedi';
+                    console.warn('Firma silinemedi', deleteTarget.id, message);
+                    setError(message);
                   } finally {
                     setBusy(false);
                   }
@@ -769,13 +889,12 @@ export function AdminPanelScreen({
               </button>
             </div>
           </div>
-        </div>
+        </SafeCenterModal>
       )}
 
       {deleteUserTarget && (
-        <div className="fixed inset-0 z-[2100] flex items-end justify-center bg-black/70 px-4 pb-10 sm:items-center">
-          <button type="button" className="absolute inset-0" aria-label="Vazgeç" onClick={() => setDeleteUserTarget(null)} />
-          <div className="relative w-full max-w-sm rounded-4xl border border-mint-100 bg-white p-5 shadow-2xl">
+        <SafeCenterModal onClose={() => setDeleteUserTarget(null)} zIndex={2100}>
+          <div className="w-full rounded-4xl border border-mint-100 bg-white p-5 shadow-2xl">
             <h3 className="text-lg font-extrabold text-mint-900">Kullanıcıyı sil?</h3>
             <p className="mt-1 text-sm text-gray-500">
               <span className="font-semibold text-mint-800">{deleteUserTarget.email}</span> kaydı silinir.
@@ -805,14 +924,14 @@ export function AdminPanelScreen({
               </button>
             </div>
           </div>
-        </div>
+        </SafeCenterModal>
       )}
     </div>
   );
 }
 
 function CompanyList({
-  companies, campaigns, query, onQuery, onOpen, onAdd,
+  companies, campaigns, query, onQuery, onOpen, onAdd, onVerify, onPlan, onQuota,
 }: {
   companies: Company[];
   campaigns: Campaign[];
@@ -820,7 +939,13 @@ function CompanyList({
   onQuery: (value: string) => void;
   onOpen: (company: Company) => void;
   onAdd: () => void;
+  onVerify: (company: Company, verified: boolean) => Promise<void>;
+  onPlan: (company: Company, tier: 'standard' | 'premium') => Promise<void>;
+  onQuota: (company: Company, quota: number | null) => Promise<void>;
 }) {
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [shown, setShown] = useState(24);
   const q = query.trim().toLocaleLowerCase('tr');
   const rows = companies
     .filter((company) => {
@@ -847,6 +972,7 @@ function CompanyList({
         </button>
       </div>
       <p className="px-1 text-[10px] font-bold uppercase tracking-wide text-mint-600">{rows.length} firma</p>
+      {verifyError ? <p className="rounded-2xl bg-red-50 px-3 py-2 text-xs text-red-600">{verifyError}</p> : null}
       {rows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-mint-100 px-3 py-8 text-center">
           <Building2 className="mx-auto h-6 w-6 text-mint-300" />
@@ -854,27 +980,83 @@ function CompanyList({
         </div>
       ) : (
         <div className="overflow-hidden rounded-2xl border border-mint-100 bg-white">
-          {rows.map((company) => {
+          {rows.slice(0, shown).map((company) => {
             const count = campaigns.filter((item) => item.company_id === company.id).length;
+            const canVerify = Boolean(company.tax_number?.trim()) || Boolean(company.is_verified);
             return (
-              <button
-                key={company.id}
-                type="button"
-                onClick={() => onOpen(company)}
-                className="flex w-full items-center justify-between gap-2 border-t border-mint-50 px-3 py-1.5 text-left first:border-t-0"
-              >
-                <span className="min-w-0">
-                  <span className="block truncate text-[12px] font-bold text-mint-900">
-                    {company.name}{company.is_featured ? ' · öne çıkan' : ''}
+              <div key={company.id} className="border-t border-mint-50 first:border-t-0">
+                <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => onOpen(company)}
+                  className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-1.5 text-left"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-[12px] font-bold text-mint-900">
+                      <span className="inline-flex items-center gap-1">{company.name}<VerifiedBadge verified={company.is_verified} /></span>{company.is_featured ? ' · öne çıkan' : ''}{company.plan_tier === 'premium' ? ' · premium' : ''}
+                    </span>
+                    <span className="block truncate text-[10px] text-gray-400">{company.category} · Vergi/TC {company.tax_number?.trim() || 'yok'}</span>
                   </span>
-                  <span className="block truncate text-[10px] text-gray-400">{company.category} · {company.address}</span>
-                </span>
-                <span className="shrink-0 text-[10px] font-extrabold text-mint-600">{count}</span>
-              </button>
+                  <span className="shrink-0 text-[10px] font-extrabold text-mint-600">{count}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={verifyingId === company.id || !canVerify}
+                  title={canVerify ? (company.is_verified ? 'Yeşil tiki kaldır' : 'Onaylı firma yap') : 'Önce vergi veya T.C. kimlik numarası gerekli'}
+                  onClick={() => {
+                    setVerifyError(null);
+                    setVerifyingId(company.id);
+                    void onVerify(company, !company.is_verified)
+                      .catch((err: unknown) => setVerifyError(err instanceof Error ? err.message : 'Onay güncellenemedi'))
+                      .finally(() => setVerifyingId(null));
+                  }}
+                  className={`mr-2 rounded-full p-1.5 ${company.is_verified ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-300'}`}
+                  aria-label={company.is_verified ? 'Onayı kaldır' : 'Onaylı firma yap'}
+                >
+                  <BadgeCheck className="h-4 w-4" />
+                </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-1 px-3 pb-2">
+                  {(['standard', 'premium'] as const).map((tier) => (
+                    <button
+                      key={tier}
+                      type="button"
+                      onClick={() => {
+                        setVerifyError(null);
+                        void onPlan(company, tier).catch((err: unknown) => setVerifyError(err instanceof Error ? err.message : 'Paket yazılamadı'));
+                      }}
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${company.plan_tier === tier || (!company.plan_tier && tier === 'standard') ? 'bg-mint-500 text-white' : 'bg-mint-50 text-mint-700'}`}
+                    >
+                      {tier === 'premium' ? 'Premium 1299' : 'Standard 599'}
+                    </button>
+                  ))}
+                  <label className="ml-auto flex items-center gap-1 text-[10px] font-bold text-gray-400">
+                    Bildirim
+                    <input
+                      key={`${company.id}-${company.push_quota_override ?? 'auto'}`}
+                      defaultValue={company.push_quota_override ?? ''}
+                      inputMode="numeric"
+                      placeholder="oto"
+                      className="w-10 rounded-lg border border-mint-100 px-1 py-0.5 text-[10px] text-mint-800"
+                      onBlur={(event) => {
+                        const raw = event.target.value.trim();
+                        const quota = raw === '' ? null : Math.max(0, Math.min(52, Number(raw)));
+                        if (raw !== '' && !Number.isFinite(quota)) return;
+                        void onQuota(company, quota).catch((err: unknown) => setVerifyError(err instanceof Error ? err.message : 'Hak yazılamadı'));
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
             );
           })}
         </div>
       )}
+      {rows.length > shown ? (
+        <button type="button" onClick={() => setShown((value) => value + 24)} className="w-full rounded-2xl bg-white py-2 text-xs font-extrabold text-mint-700">
+          Daha fazla ({rows.length - shown})
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -895,6 +1077,7 @@ function CompanyForm({
     phone: string;
     email: string;
     password: string;
+    is_pilot_firm: boolean;
   }) => Promise<void>;
 }) {
   const [name, setName] = useState('');
@@ -903,18 +1086,21 @@ function CompanyForm({
   const [mode, setMode] = useState<'manual' | 'map'>('manual');
   const [city, setCity] = useState('İstanbul');
   const [district, setDistrict] = useState('Kadıköy');
+  const [neighborhood, setNeighborhood] = useState('');
   const [street, setStreet] = useState('');
+  const [door, setDoor] = useState('');
   const [latitude, setLatitude] = useState(DEFAULT_LAT);
   const [longitude, setLongitude] = useState(DEFAULT_LNG);
   const [featured, setFeatured] = useState(false);
+  const [pilot, setPilot] = useState(false);
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [geoBusy, setGeoBusy] = useState(false);
 
   const addressLabel = useMemo(() => {
-    return [city, district, street].map((part) => part.trim()).filter(Boolean).join(', ');
-  }, [city, district, street]);
+    return [street, door ? `No: ${door}` : '', neighborhood, district, city].map((part) => part.trim()).filter(Boolean).join(', ');
+  }, [city, district, neighborhood, street, door]);
 
   const applyCoords = async (lat: number, lng: number) => {
     setLatitude(lat);
@@ -956,6 +1142,7 @@ function CompanyForm({
           phone,
           email,
           password,
+          is_pilot_firm: pilot,
         });
       }}
     >
@@ -1000,7 +1187,9 @@ function CompanyForm({
         <div className="space-y-2">
           <input className={fieldClass} placeholder="İl" value={city} onChange={(e) => setCity(e.target.value)} />
           <input className={fieldClass} placeholder="İlçe" value={district} onChange={(e) => setDistrict(e.target.value)} />
-          <input className={fieldClass} required placeholder="Açık adres" value={street} onChange={(e) => setStreet(e.target.value)} />
+          <input className={fieldClass} placeholder="Mahalle" value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)} />
+          <input className={fieldClass} required placeholder="Cadde / Sokak" value={street} onChange={(e) => setStreet(e.target.value)} />
+          <input className={fieldClass} placeholder="Bina / Kapı no" value={door} onChange={(e) => setDoor(e.target.value)} />
           <button type="button" onClick={() => void geocodeManual()} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-mint-50 px-4 py-2.5 text-sm font-semibold text-mint-800">
             {geoBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPin className="w-4 h-4" />}
             Adresten koordinat al
@@ -1017,7 +1206,9 @@ function CompanyForm({
           />
           <input className={fieldClass} placeholder="İl" value={city} onChange={(e) => setCity(e.target.value)} />
           <input className={fieldClass} placeholder="İlçe" value={district} onChange={(e) => setDistrict(e.target.value)} />
-          <input className={fieldClass} placeholder="Açık adres" value={street} onChange={(e) => setStreet(e.target.value)} />
+          <input className={fieldClass} placeholder="Mahalle" value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)} />
+          <input className={fieldClass} placeholder="Cadde / Sokak" value={street} onChange={(e) => setStreet(e.target.value)} />
+          <input className={fieldClass} placeholder="Bina / Kapı no" value={door} onChange={(e) => setDoor(e.target.value)} />
         </div>
       )}
 
@@ -1028,6 +1219,13 @@ function CompanyForm({
       <label className="flex items-center gap-2 text-sm font-semibold text-mint-800">
         <input type="checkbox" checked={featured} onChange={(e) => setFeatured(e.target.checked)} />
         Haritada öne çıkar
+      </label>
+      <label className="flex items-start gap-2 rounded-2xl bg-mint-50 px-3 py-3 text-sm font-semibold text-mint-800">
+        <input type="checkbox" className="mt-1" checked={pilot} onChange={(e) => setPilot(e.target.checked)} />
+        <span>
+          Pilot Firma (2 Ay Ücretsiz)
+          <span className="mt-0.5 block text-xs font-semibold text-mint-600">Bitiş bugünden 60 gün sonrası olur. Bu sürede ödeme ekranı açılmaz; süre bitince ücretli plana geçer.</span>
+        </span>
       </label>
 
       <button type="submit" disabled={busy} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-mint-500 py-3.5 font-semibold text-white disabled:opacity-50">

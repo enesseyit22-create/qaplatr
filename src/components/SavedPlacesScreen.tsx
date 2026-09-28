@@ -2,6 +2,7 @@ import { Heart, Store, User } from 'lucide-react';
 import type { Merchant } from '@/lib/supabase';
 import { useAuth } from '@/lib/authContext';
 import { TabPageShell, tabCard, tabIconWrap, tabPrimary } from '@/components/TabPageShell';
+import { FirmName } from '@/components/VerifiedBadge';
 
 export { ProfileTabScreen, SettingsTabScreen } from '@/components/ProfileAccountScreen';
 
@@ -30,7 +31,7 @@ export function SavedPlacesScreen({
                 <Store className="h-5 w-5" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-extrabold text-mint-800">{item.name}</span>
+                <FirmName name={item.name} verified={item.is_verified} className="font-extrabold text-mint-800" />
                 <span className="block truncate text-xs text-gray-400">{item.category}</span>
               </span>
               <Heart className="h-4 w-4 fill-mint-500 text-mint-500" />

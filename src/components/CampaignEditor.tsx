@@ -47,9 +47,6 @@ export function CampaignEditor({
     initial?.discount_rate && Number(initial.discount_rate) > 0 ? String(initial.discount_rate) : '',
   );
   const [stock, setStock] = useState(String(initial?.stock ?? 10));
-  const [mode, setMode] = useState<'date' | 'countdown'>(initial?.duration_type ?? 'date');
-  const [expiry, setExpiry] = useState(initial?.expiry_date?.slice(0, 10) ?? new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
-  const [hours, setHours] = useState(String(initial?.duration_hours ?? 24));
   const [details, setDetails] = useState(initial?.details ?? '');
   const [active, setActive] = useState(initial?.is_active ?? true);
   const [image, setImage] = useState<string | null>(initial?.image_url ?? null);
@@ -74,10 +71,7 @@ export function CampaignEditor({
         const units = Math.floor(Number(stock));
         if (!title.trim() || !Number.isFinite(rate) || rate < 0 || rate > 100) return;
         if (!Number.isFinite(units) || units < 1) return;
-        const durationHours = mode === 'countdown' ? Number(hours) : null;
-        const expiryDate = mode === 'countdown'
-          ? new Date(Date.now() + Math.max(1, Number(hours) || 1) * 3600000).toISOString()
-          : expiry;
+        const expiryDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
         await onSubmit({
           title,
           discount_rate: rate,
@@ -85,8 +79,8 @@ export function CampaignEditor({
           details,
           is_active: active,
           image_url: image,
-          duration_type: mode,
-          duration_hours: Number.isFinite(durationHours) ? durationHours : null,
+          duration_type: 'countdown',
+          duration_hours: 24,
           stock: units,
         });
       }}
@@ -127,15 +121,9 @@ export function CampaignEditor({
           />
         </label>
       </div>
-      <div className={`grid grid-cols-2 rounded-2xl p-1 ${dark ? 'bg-white/5' : 'bg-mint-50'}`}>
-        <button type="button" onClick={() => setMode('date')} className={`rounded-xl py-1.5 text-[11px] font-bold ${mode === 'date' ? (dark ? 'bg-emerald-400 text-zinc-950' : 'bg-white text-mint-700') : (dark ? 'text-zinc-400' : 'text-mint-600')}`}>Tarih</button>
-        <button type="button" onClick={() => setMode('countdown')} className={`rounded-xl py-1.5 text-[11px] font-bold ${mode === 'countdown' ? (dark ? 'bg-emerald-400 text-zinc-950' : 'bg-white text-mint-700') : (dark ? 'text-zinc-400' : 'text-mint-600')}`}>Sayaç</button>
-      </div>
-      {mode === 'date' ? (
-        <input className={field} required type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
-      ) : (
-        <input className={field} required type="number" min={1} max={720} value={hours} onChange={(e) => setHours(e.target.value)} placeholder="Saat" />
-      )}
+      <p className={`rounded-2xl px-3 py-2 text-[11px] font-semibold ${dark ? 'bg-white/5 text-zinc-300' : 'bg-mint-50 text-mint-800'}`}>
+        Keşif vitrininde 24 saat yayında kalır. Süre dolunca arşive düşer. Stok, girdiğin adet kadar düşer.
+      </p>
       <textarea className={`${field} min-h-[72px]`} placeholder="Detay" value={details} onChange={(e) => setDetails(e.target.value)} />
       <label className={`flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs font-semibold ${dark ? 'border-white/10 text-zinc-300' : 'border-mint-100 text-mint-700'}`}>
         <ImagePlus className="h-4 w-4" />

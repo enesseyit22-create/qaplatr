@@ -1,6 +1,38 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ChevronUp, Flame, Music, Palette, Scissors, Search, Sparkles, Store, Utensils, Dumbbell, Armchair, X } from 'lucide-react';
-import type { ExploreCategoryId } from '@/lib/sectors';
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
+import {
+  Baby, Briefcase, Building2, Car, ChevronUp, Coffee, Dumbbell, GraduationCap,
+  Heart, LayoutGrid, Music, Package, Palette, PawPrint, Scissors, Search, Shirt,
+  ShoppingBag, Sofa, Stethoscope, Utensils, Wrench, X, Zap, Cpu,
+} from 'lucide-react';
+import { ExploreBannerSlider, type ShowcasePlace } from '@/components/ExploreBannerSlider';
+import { EXPLORE_FEED, type ExploreCategoryId, type ExploreFeedId } from '@/lib/sectors';
+
+export type { ExploreFeedId };
+
+const FEED_ICONS: Record<ExploreFeedId, typeof Utensils> = {
+  all: LayoutGrid,
+  food: Utensils,
+  cafe: Coffee,
+  market: ShoppingBag,
+  wear: Shirt,
+  bridal: Heart,
+  beauty: Scissors,
+  sport: Dumbbell,
+  health: Stethoscope,
+  furniture: Sofa,
+  decor: Palette,
+  fun: Music,
+  tech: Cpu,
+  service: Wrench,
+  education: GraduationCap,
+  auto: Car,
+  estate: Building2,
+  cargo: Package,
+  pet: PawPrint,
+  kids: Baby,
+  corporate: Briefcase,
+  deal: Zap,
+};
 
 export type { ExploreCategoryId };
 
@@ -17,24 +49,6 @@ function readSafeInset(edge: 'top' | 'bottom') {
   return Number.isFinite(px) ? px : 0;
 }
 
-const CATEGORIES: {
-  id: ExploreCategoryId;
-  label: string;
-  hint: string;
-  Icon: typeof Utensils;
-  tone: string;
-}[] = [
-  { id: 'esnaf', label: 'Yerel Esnaf', hint: 'Çevrendeki dükkanlar', Icon: Store, tone: 'bg-emerald-50 text-emerald-700' },
-  { id: 'gelinlik', label: 'Gelinlik', hint: 'Düğün ve özel gün', Icon: Sparkles, tone: 'bg-pink-50 text-pink-600' },
-  { id: 'mobilya', label: 'Mobilya', hint: 'Ev ve ofis', Icon: Armchair, tone: 'bg-amber-50 text-amber-700' },
-  { id: 'restoran', label: 'Restoran', hint: 'Yeme & içme', Icon: Utensils, tone: 'bg-orange-50 text-orange-600' },
-  { id: 'firsat', label: 'Hızlı Fırsatlar', hint: 'Anlık indirimler', Icon: Flame, tone: 'bg-rose-50 text-rose-600' },
-  { id: 'guzellik', label: 'Güzellik', hint: 'Bakım ve stil', Icon: Scissors, tone: 'bg-violet-50 text-violet-600' },
-  { id: 'spor', label: 'Spor', hint: 'Hareket ve stüdyo', Icon: Dumbbell, tone: 'bg-sky-50 text-sky-600' },
-  { id: 'dekorasyon', label: 'Dekorasyon', hint: 'Ev ve tasarım', Icon: Palette, tone: 'bg-lime-50 text-lime-700' },
-  { id: 'eglence', label: 'Eğlence', hint: 'Sahne ve gece', Icon: Music, tone: 'bg-fuchsia-50 text-fuchsia-600' },
-];
-
 type ExploreSheetProps = {
   category: ExploreCategoryId;
   onCategory: (id: ExploreCategoryId) => void;
@@ -45,19 +59,27 @@ type ExploreSheetProps = {
   searchQuery?: string;
   onSearchQuery?: (value: string) => void;
   campaignHits?: ExploreCategoryId[];
+  feed?: ExploreFeedId;
+  onFeed?: (id: ExploreFeedId) => void;
+  origin?: { latitude: number; longitude: number } | null;
+  places?: ShowcasePlace[];
   children: ReactNode;
 };
 
 export function ExploreSheet({
-  category,
-  onCategory,
+  category: _category,
+  onCategory: _onCategory,
   onHeightChange,
   locationHint,
   collapsed = true,
   onToggle,
   searchQuery,
   onSearchQuery,
-  campaignHits = [],
+  campaignHits: _campaignHits = [],
+  feed = 'all',
+  onFeed,
+  origin = null,
+  places = [],
   children,
 }: ExploreSheetProps) {
   const sheetRef = useRef<HTMLElement>(null);
@@ -72,10 +94,20 @@ export function ExploreSheet({
     if (!node) return;
     const height = expandedH.current;
     const visible = hidden ? SHEET_PEEK : height;
+    node.style.willChange = 'transform';
     node.style.transition = animate ? 'transform 420ms cubic-bezier(0.22, 1, 0.36, 1)' : 'none';
-    node.style.height = `${height}px`;
+    if (node.style.height !== `${height}px`) node.style.height = `${height}px`;
     node.style.transform = `translate3d(0, ${height - visible}px, 0)`;
-    onHeightRef.current(visible);
+    if (!animate) {
+      onHeightRef.current(visible);
+      return;
+    }
+    const done = (event: TransitionEvent) => {
+      if (event.propertyName !== 'transform') return;
+      node.removeEventListener('transitionend', done);
+      onHeightRef.current(visible);
+    };
+    node.addEventListener('transitionend', done);
   };
 
   const measure = () => {
@@ -91,8 +123,8 @@ export function ExploreSheet({
       window.requestAnimationFrame(measure);
       return;
     }
-    const capped = Math.max(SHEET_PEEK + 120, vh - headerReserve - bottomReserve);
-    expandedH.current = Math.min(Math.round(vh * 0.72), capped);
+    const capped = Math.max(SHEET_PEEK + 180, vh - headerReserve - bottomReserve);
+    expandedH.current = Math.min(Math.round(vh * 0.82), capped);
     paint(collapsedRef.current, false);
   };
 
@@ -116,20 +148,46 @@ export function ExploreSheet({
   }, [collapsed]);
 
   const [sectorQuery, setSectorQuery] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
   const query = searchQuery ?? sectorQuery;
   const setQuery = (value: string) => {
     setSectorQuery(value);
     onSearchQuery?.(value);
   };
-  const visibleSectors = useMemo(() => {
-    const q = query.trim().toLocaleLowerCase('tr');
-    if (!q) return CATEGORIES;
-    const hit = new Set(campaignHits);
-    return CATEGORIES.filter((item) =>
-      `${item.label} ${item.hint}`.toLocaleLowerCase('tr').includes(q) || hit.has(item.id),
-    );
-  }, [query, campaignHits]);
+  const drag = useRef<{ y: number; moved: boolean } | null>(null);
+
+  const onHandleDown = (event: PointerEvent<HTMLButtonElement>) => {
+    drag.current = { y: event.clientY, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onHandleMove = (event: PointerEvent<HTMLButtonElement>) => {
+    const start = drag.current;
+    const node = sheetRef.current;
+    if (!start || !node) return;
+    const dy = event.clientY - start.y;
+    if (Math.abs(dy) > 8) start.moved = true;
+    const height = expandedH.current;
+    const base = collapsedRef.current ? SHEET_PEEK : height;
+    const visible = Math.min(height, Math.max(SHEET_PEEK, base - dy));
+    node.style.transition = 'none';
+    node.style.transform = `translate3d(0, ${height - visible}px, 0)`;
+  };
+
+  const onHandleUp = (event: PointerEvent<HTMLButtonElement>) => {
+    const start = drag.current;
+    drag.current = null;
+    if (!start) return;
+    const dy = event.clientY - start.y;
+    if (!start.moved) {
+      onToggle();
+      return;
+    }
+    const shouldCollapse = dy > 28;
+    const shouldExpand = dy < -28;
+    if (shouldCollapse && !collapsedRef.current) onToggle();
+    else if (shouldExpand && collapsedRef.current) onToggle();
+    else paint(collapsedRef.current, true);
+  };
 
   return (
     <section
@@ -142,8 +200,11 @@ export function ExploreSheet({
     >
       <button
         type="button"
-        onClick={onToggle}
-        className="relative flex w-full shrink-0 flex-col items-center px-4 pb-2 pt-1.5 pointer-events-auto"
+        onPointerDown={onHandleDown}
+        onPointerMove={onHandleMove}
+        onPointerUp={onHandleUp}
+        onPointerCancel={onHandleUp}
+        className="relative flex w-full shrink-0 touch-none flex-col items-center px-4 pb-2 pt-1.5 pointer-events-auto"
         aria-expanded={!collapsed}
         aria-label={collapsed ? 'Keşfet panelini aç' : 'Keşfet panelini kapat'}
       >
@@ -174,64 +235,36 @@ export function ExploreSheet({
             {locationHint}
           </p>
         )}
-        <div
-          className="-mx-4 flex items-center gap-2 overflow-x-auto no-scrollbar px-4 pb-1"
-          onClick={(event) => {
-            const target = event.target as HTMLElement | null;
-            if (target?.closest('[data-sector-chip]')) return;
-            setSearchOpen(true);
-          }}
-        >
-          <div
-            className={`flex h-9 shrink-0 items-center overflow-hidden rounded-full border border-[#00A884]/25 bg-white shadow-sm transition-all duration-300 ${
-              searchOpen ? 'w-52' : 'w-9'
-            }`}
-          >
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                setSearchOpen((open) => {
-                if (open) setQuery('');
-                  return !open;
-                });
-              }}
-              className="flex h-9 w-9 shrink-0 items-center justify-center text-[#00A884]"
-              aria-label="Sektör ara"
-              aria-expanded={searchOpen}
-            >
-              {searchOpen ? <X className="h-4 w-4" /> : <Search className="h-4 w-4" />}
+        <ExploreBannerSlider origin={origin} places={places} />
+        <label className="mt-3 flex items-center gap-2 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2.5">
+          <Search className="h-4 w-4 shrink-0 text-slate-400" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Kampanya veya firma ara"
+            className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold text-slate-800 outline-none placeholder:font-medium placeholder:text-slate-400"
+          />
+          {query ? (
+            <button type="button" onClick={() => setQuery('')} aria-label="Aramayı temizle" className="text-slate-400">
+              <X className="h-4 w-4" />
             </button>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onClick={(event) => event.stopPropagation()}
-              placeholder="Sektör veya kampanya"
-              autoFocus={searchOpen}
-              className={`h-9 min-w-0 bg-transparent text-[12px] font-semibold text-slate-800 outline-none transition-all duration-300 ${
-                searchOpen ? 'w-40 opacity-100' : 'w-0 opacity-0'
-              }`}
-            />
-          </div>
-          {visibleSectors.map((item) => {
-            const active = category === item.id;
-            const Icon = item.Icon;
+          ) : null}
+        </label>
+        <div className="-mx-4 mt-3 flex gap-3 overflow-x-auto px-4 pb-1 no-scrollbar">
+          {EXPLORE_FEED.map((item) => {
+            const active = feed === item.id;
+            const Icon = FEED_ICONS[item.id];
             return (
               <button
                 key={item.id}
                 type="button"
-                data-sector-chip
-                onClick={() => onCategory(item.id)}
-                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1.5 transition-all duration-300 ${
-                  active
-                    ? 'border-[#00A884]/30 bg-[#00A884]/10 shadow-sm'
-                    : 'border-slate-100 bg-slate-50'
-                }`}
+                onClick={() => onFeed?.(item.id)}
+                className="flex w-[4.8rem] shrink-0 flex-col items-center gap-1.5"
               >
-                <span className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${item.tone}`}>
-                  <Icon className="h-3.5 w-3.5" />
+                <span className={`flex h-12 w-12 items-center justify-center rounded-full border ${active ? 'border-[#2f6fe0] bg-[#2f6fe0] text-white shadow-md' : 'border-slate-200 bg-white text-slate-500'}`}>
+                  <Icon className="h-5 w-5" />
                 </span>
-                <span className="whitespace-nowrap text-[12px] font-extrabold text-slate-800">{item.label}</span>
+                <span className={`text-center text-[10px] font-extrabold leading-tight ${active ? 'text-[#2f6fe0]' : 'text-slate-500'}`}>{item.label}</span>
               </button>
             );
           })}

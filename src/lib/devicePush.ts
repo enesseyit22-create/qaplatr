@@ -41,19 +41,34 @@ function readStoredToken() {
 
 export async function saveDevicePushToken(next: PushIdentity, token: string): Promise<void> {
   const value = token.trim();
-  const userId = next.userId?.trim() ?? '';
-  if (!isSupabaseConfigured || !userId || !value) return;
-  const companyId = next.role === 'merchant' ? (next.companyId?.trim() || null) : null;
-  await supabase.from('device_push_tokens').upsert(
-    {
-      user_id: userId,
+  if (!isSupabaseConfigured || !value) return;
+  const session = await supabase.auth.getUser();
+  const userId = session.data.user?.id || next.userId?.trim() || '';
+  const role = userId ? (next.role === 'admin' || next.role === 'merchant' || next.role === 'user' ? next.role : 'user') : 'guest';
+  const companyId = role === 'merchant' ? (next.companyId?.trim() || null) : null;
+  const registered = await supabase.rpc('register_device_push', {
+    p_token: value,
+    p_company: companyId,
+    p_platform: Capacitor.getPlatform(),
+    p_role: role,
+  });
+  if (registered.error) {
+    const row = {
+      user_id: userId || null,
       fcm_token: value,
       company_id: companyId,
       platform: Capacitor.getPlatform(),
+      role,
       updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'user_id,fcm_token' },
-  );
+    };
+    const saved = await supabase.from('device_push_tokens').upsert(row, { onConflict: 'user_id,fcm_token' });
+    const moved = saved.error
+      ? await supabase.from('device_push_tokens').upsert(row, { onConflict: 'fcm_token' })
+      : null;
+    if (saved.error && moved?.error) {
+      console.warn('FCM token kaydı başarısız', registered.error.message, moved.error.message);
+    }
+  }
   if (next.role === 'admin') {
     await saveAdminFcmToken(userId, value);
   }
@@ -62,7 +77,31 @@ export async function saveDevicePushToken(next: PushIdentity, token: string): Pr
   }
 }
 
-async function persistCurrentToken() {
+let lastAreaAt = 0;
+
+export async function rememberDeviceArea(latitude: number, longitude: number) {
+  if (!isSupabaseConfigured || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+  const now = Date.now();
+  if (now - lastAreaAt < 60_000) return;
+  const token = readStoredToken();
+  if (!token) return;
+  lastAreaAt = now;
+  const saved = await supabase.rpc('touch_device_location', {
+    p_token: token,
+    p_lat: latitude,
+    p_lng: longitude,
+  });
+  if (saved.error) lastAreaAt = 0;
+}
+
+export async function flushDevicePushToken(next?: PushIdentity) {
+  if (next) {
+    identity = {
+      userId: next.userId?.trim() || null,
+      companyId: next.companyId?.trim() || null,
+      role: next.role ?? null,
+    };
+  }
   const token = readStoredToken();
   if (!token) return;
   try {
@@ -86,7 +125,7 @@ export function syncPushIdentity(next: PushIdentity) {
     role: next.role ?? null,
   };
   if (!Capacitor.isNativePlatform()) return;
-  void persistCurrentToken();
+  void flushDevicePushToken();
 }
 
 export async function startDevicePush(): Promise<void> {
@@ -97,10 +136,10 @@ export async function startDevicePush(): Promise<void> {
     if (run !== generation) return;
     const registration = await PushNotifications.addListener('registration', (event) => {
       rememberToken(event.value ?? '');
-      void persistCurrentToken();
+      void flushDevicePushToken();
     });
-    const registrationError = await PushNotifications.addListener('registrationError', () => {
-      /* izin veya FCM yapılandırması yoksa uygulama açılışını bozma */
+    const registrationError = await PushNotifications.addListener('registrationError', (error) => {
+      console.warn('FCM kaydı başarısız', error.error);
     });
     const received = await PushNotifications.addListener('pushNotificationReceived', (notification) => {
       const data = notification.data ?? {};
@@ -130,10 +169,23 @@ export async function startDevicePush(): Promise<void> {
     }
     if (run !== generation) return;
     if (status.receive === 'granted') {
+      try {
+        await PushNotifications.createChannel({
+          id: 'qapla_alerts',
+          name: 'QapLA bildirimleri',
+          description: 'Kampanya ve kupon',
+          importance: 5,
+          visibility: 1,
+          sound: 'default',
+          vibration: true,
+        });
+      } catch (channelError) {
+        console.warn('Bildirim kanalı kurulamadı', channelError);
+      }
       await PushNotifications.register();
     }
-  } catch {
-    /* web veya eksik native plugin */
+  } catch (error) {
+    console.warn('Push başlatılamadı', error);
   }
 }
 

@@ -1,4 +1,5 @@
-import { hasValidCoords, isWithinRadius, NEARBY_RADIUS_M } from '@/lib/geo';
+import { hasValidCoords, isWithinRadius } from '@/lib/geo';
+import { couponRadiusM } from '@/lib/reach';
 import { requestDeviceLocation } from '@/lib/location';
 import type { RedemptionCode } from '@/lib/campaigns';
 
@@ -41,7 +42,7 @@ export function couponGpsNearMerchant(
       message: 'İşletme harita konumu henüz tanımlı değil.',
     };
   }
-  if (!isWithinRadius(gpsLat, gpsLng, merchantLat, merchantLng, NEARBY_RADIUS_M)) {
+  if (!isWithinRadius(gpsLat, gpsLng, merchantLat, merchantLng, couponRadiusM())) {
     return {
       ok: false,
       code: 'TOO_FAR',

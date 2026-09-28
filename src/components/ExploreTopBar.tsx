@@ -10,6 +10,7 @@ import { useAuth } from '@/lib/authContext';
 import { accountHasVip, useAppFeatures } from '@/lib/appFeatures';
 import type { ExploreCategoryId } from '@/lib/sectors';
 import { filterAddressPresets, searchNominatimMany, type SavedAddress } from '@/lib/address';
+import { FirmName } from '@/components/VerifiedBadge';
 
 export function ExploreTopBar({
   merchants,
@@ -50,7 +51,7 @@ export function ExploreTopBar({
   const features = useAppFeatures();
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
-  const [notesOpen, setNotesOpen] = useState(false);
+  const [notesPhase, setNotesPhase] = useState<'closed' | 'open' | 'closing'>('closed');
   const [hits, setHits] = useState<SavedAddress[]>([]);
   const [searching, setSearching] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -75,12 +76,24 @@ export function ExploreTopBar({
     const onDoc = (event: MouseEvent) => {
       if (!wrapRef.current?.contains(event.target as Node)) {
         setOpen(false);
-        setNotesOpen(false);
+        setNotesPhase((phase) => (phase === 'open' ? 'closing' : phase));
       }
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, []);
+
+  useEffect(() => {
+    if (notesPhase !== 'closing') return;
+    const timer = window.setTimeout(() => setNotesPhase('closed'), 260);
+    return () => window.clearTimeout(timer);
+  }, [notesPhase]);
+
+  const closeNotes = () => setNotesPhase((phase) => (phase === 'open' ? 'closing' : phase));
+  const toggleNotes = () => {
+    setOpen(false);
+    setNotesPhase((phase) => (phase === 'open' ? 'closing' : 'open'));
+  };
 
   useEffect(() => {
     const q = query.trim();
@@ -144,7 +157,7 @@ export function ExploreTopBar({
             onChange={(event) => {
               setQuery(event.target.value);
               setOpen(true);
-              setNotesOpen(false);
+              closeNotes();
             }}
             onFocus={() => setOpen(true)}
             placeholder="Adres veya konum ara..."
@@ -170,9 +183,9 @@ export function ExploreTopBar({
               setStoryHint(false);
               onOpenStories?.();
             }}
-            className={`story-nudge absolute right-[3.35rem] top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded-2xl bg-mint-600 px-2.5 py-1.5 text-[10px] font-extrabold leading-none text-white shadow-lg ${
-              storyHint && !notesOpen && !showSuggest
-                ? 'opacity-100 animate-fade-out [animation-delay:3.7s] [animation-fill-mode:forwards]'
+            className={`story-nudge absolute right-[3.35rem] top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded-2xl bg-mint-600 px-2.5 py-1.5 text-[10px] font-extrabold leading-none text-white shadow-lg transition-opacity duration-700 ease-in-out ${
+              storyHint && notesPhase === 'closed' && !showSuggest
+                ? 'opacity-100'
                 : 'pointer-events-none opacity-0'
             }`}
           >
@@ -184,7 +197,7 @@ export function ExploreTopBar({
             aria-label={storyCount > 0 ? `Hikayeler, ${storyCount} izlenmeyen` : 'Hikayeler'}
             onClick={() => {
               setOpen(false);
-              setNotesOpen(false);
+              closeNotes();
               setStoryHint(false);
               onOpenStories?.();
             }}
@@ -201,13 +214,10 @@ export function ExploreTopBar({
         <button
           type="button"
           aria-label="Bildirimler"
-          onClick={() => {
-            setNotesOpen((current) => !current);
-            setOpen(false);
-          }}
-          className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-white text-slate-700 shadow-md"
+          onClick={toggleNotes}
+          className={`relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-white text-slate-700 shadow-md transition-transform duration-300 ${notesPhase === 'open' ? 'scale-105' : ''}`}
         >
-          <Bell className="h-6 w-6" />
+          <Bell className={`h-6 w-6 ${notesPhase === 'open' ? 'notice-bell-live text-mint-600' : ''}`} />
           {pushed.length + offerNotes.length > 0 ? (
             <span className="absolute right-1.5 top-1.5 h-2.5 w-2.5 rounded-full bg-red-500" />
           ) : null}
@@ -241,38 +251,52 @@ export function ExploreTopBar({
           )}
         </div>
       ) : null}
-      {notesOpen ? (
-        <div className="mt-2 overflow-hidden rounded-2xl bg-white shadow-lg ring-1 ring-black/5">
-          <p className="px-3.5 pt-3 text-[11px] font-extrabold uppercase tracking-wide text-slate-400">Bildirimler</p>
+      {notesPhase !== 'closed' ? (
+        <div
+          role="dialog"
+          aria-label="Bildirimler"
+          className={`notice-pop mt-2 overflow-hidden rounded-[1.6rem] bg-white shadow-[0_18px_50px_-18px_rgba(15,118,110,0.35)] ring-1 ring-mint-100 ${notesPhase === 'closing' ? 'is-closing' : ''}`}
+        >
+          <div className="flex items-center gap-2 px-4 pb-1 pt-3.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-2xl bg-mint-50 text-mint-600">
+              <Bell className="h-4 w-4" />
+            </span>
+            <p className="text-sm font-extrabold text-mint-900">Bildirimler</p>
+          </div>
           {pushed.length === 0 && offerNotes.length === 0 ? (
-            <p className="px-3.5 py-3 text-xs text-slate-400">Bildirim yok.</p>
+            <p className="px-4 pb-4 pt-1 text-sm text-slate-400">Şimdilik sessiz. Yeni bir şey olunca burada belirir.</p>
           ) : (
-            <>
-              {pushed.map((item) => (
-                <div key={item.id} className="border-t border-slate-50 px-3.5 py-2.5 first:border-t-0">
+            <div className="max-h-72 overflow-y-auto pb-2">
+              {pushed.map((item, index) => (
+                <div
+                  key={item.id}
+                  className="notice-pop-item mx-2 mb-1 rounded-2xl bg-mint-50/80 px-2.5 py-2.5"
+                  style={{ animationDelay: `${40 + index * 45}ms` }}
+                >
                   <p className="text-[10px] font-extrabold uppercase tracking-wide text-mint-600">{item.from_name}</p>
                   <p className="text-sm font-bold text-slate-800">{item.title}</p>
-                  <p className="text-xs text-slate-500">{item.body}</p>
+                  <p className="text-xs leading-relaxed text-slate-500">{item.body}</p>
                 </div>
               ))}
-              {offerNotes.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => {
-                  if (item.qapla_merchants) onPickMerchant(item.qapla_merchants);
-                  setNotesOpen(false);
-                }}
-                className="flex w-full items-start gap-2 px-3.5 py-2.5 text-left hover:bg-slate-50"
-              >
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-bold text-slate-800">{item.qapla_merchants?.name ?? 'İşletme'}</span>
-                  <span className="block truncate text-xs text-slate-500">{item.title}</span>
-                </span>
-              </button>
+              {offerNotes.map((item, index) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    if (item.qapla_merchants) onPickMerchant(item.qapla_merchants);
+                    closeNotes();
+                  }}
+                  className="notice-pop-item mx-2 mb-1 flex w-[calc(100%-1rem)] items-start gap-2 rounded-2xl px-2.5 py-2.5 text-left hover:bg-mint-50/80"
+                  style={{ animationDelay: `${40 + (pushed.length + index) * 45}ms` }}
+                >
+                  <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-mint-600" />
+                  <span className="min-w-0">
+                    <FirmName name={item.qapla_merchants?.name ?? 'İşletme'} verified={item.qapla_merchants?.is_verified} className="text-sm font-bold text-slate-800" />
+                    <span className="block truncate text-xs text-slate-500">{item.title}</span>
+                  </span>
+                </button>
               ))}
-            </>
+            </div>
           )}
         </div>
       ) : null}

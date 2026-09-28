@@ -23,6 +23,8 @@ import {
 import { upsertLocalUser } from '@/lib/adminStore';
 import { notifyAdminsOfSignup } from '@/lib/adminSettings';
 import { loadBusinessForUser, retryPendingBusinessApplication, type BusinessApplication } from '@/lib/businesses';
+import { recordActivity } from '@/lib/activityLog';
+import { flushDevicePushToken } from '@/lib/devicePush';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 export type AuthUser = {
@@ -335,6 +337,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const kind = toAuthUser(data.user).signupKind;
     if (gate === 'merchant') {
       if (application && application.status !== 'approved') {
+        void recordActivity('login', { gate, email: normalized, destination: 'pending' });
+        void flushDevicePushToken({ userId: data.user.id, companyId: null, role: 'user' });
         return { ok: true, role: 'user', destination: 'pending' };
       }
       if (application?.status === 'approved' || nextProfile?.role === 'merchant') {
@@ -345,6 +349,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             company_id: application?.company_id ?? nextProfile.company_id,
           });
         }
+        void recordActivity('login', { gate, email: normalized, destination: 'merchant' }, application?.company_id ?? nextProfile?.company_id);
+        void flushDevicePushToken({
+          userId: data.user.id,
+          companyId: application?.company_id ?? nextProfile?.company_id ?? null,
+          role: 'merchant',
+        });
         return { ok: true, role: 'merchant', destination: 'merchant' };
       }
       await supabase.auth.signOut();
@@ -361,7 +371,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setBusinessApplication(null);
       return { ok: false, message: loginGateMessage(gate) };
     }
-    return { ok: true, role, destination: destinationForAccount(role, application, kind) };
+    const destination = destinationForAccount(role, application, kind);
+    void recordActivity('login', { gate, email: normalized, destination }, nextProfile?.company_id);
+    void flushDevicePushToken({
+      userId: data.user.id,
+      companyId: nextProfile?.company_id ?? null,
+      role: role,
+    });
+    return { ok: true, role, destination };
   }, [applySessionUser]);
 
   const signUp = useCallback(async (email: string, password: string, phone: string, firstName: string, lastName: string, city: string): Promise<AuthResult> => {
@@ -463,6 +480,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     fetchGen.current += 1;
     if (isSupabaseConfigured) {
+      await recordActivity('logout', { email: user?.email ?? null }, profile?.company_id);
       await supabase.auth.signOut();
     } else {
       writeLocalSession(null, null);
@@ -470,7 +488,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setProfile(null);
     setBusinessApplication(null);
-  }, []);
+  }, [profile?.company_id, user?.email]);
 
   const updateAccount = useCallback(async (input: { firstName: string; lastName: string; phone: string; password?: string; email?: string }): Promise<AuthResult> => {
     if (!user) return { ok: false, message: 'Giriş yapın.' };

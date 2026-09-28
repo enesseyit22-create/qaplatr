@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { distanceMeters, hasValidCoords, NEARBY_RADIUS_M } from '@/lib/geo';
+import { distanceMeters, hasValidCoords } from '@/lib/geo';
+import { storyRadiusM } from '@/lib/reach';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { subscribeTables } from '@/lib/live';
 
@@ -19,6 +20,7 @@ export type Story = {
   created_by: 'admin' | 'merchant';
   latitude?: number | null;
   longitude?: number | null;
+  status?: 'pending' | 'live';
 };
 
 export type StoryPermission = {
@@ -89,15 +91,20 @@ function asStory(row: Record<string, unknown>): Story {
     created_by: row.created_by === 'merchant' ? 'merchant' : 'admin',
     latitude: typeof row.latitude === 'number' ? row.latitude : null,
     longitude: typeof row.longitude === 'number' ? row.longitude : null,
+    status: row.status === 'pending' ? 'pending' : 'live',
   };
 }
 
+let storyFetch = 0;
+
 export async function refreshStories() {
   if (!isSupabaseConfigured) return readStories();
+  const ticket = ++storyFetch;
   const [{ data: storyRows }, { data: permRows }] = await Promise.all([
     supabase.from('stories').select('*').gt('expires_at', new Date().toISOString()).order('created_at', { ascending: false }),
     supabase.from('story_permissions').select('*'),
   ]);
+  if (ticket !== storyFetch) return readStories();
   if (storyRows) writeJson(STORIES_KEY, storyRows.map((item) => asStory(item as Record<string, unknown>)));
   if (permRows) writeJson(STORY_PERMS_KEY, permRows as StoryPermission[]);
   return readStories();
@@ -112,12 +119,13 @@ export async function addStory(input: Omit<Story, 'id' | 'created_at' | 'expires
   const ttl = input.created_by === 'admin' ? 365 * STORY_TTL_MS : STORY_TTL_MS;
   const row: Story = {
     ...input,
+    status: input.created_by === 'merchant' ? 'pending' : 'live',
     id: crypto.randomUUID(),
     created_at: new Date(now).toISOString(),
     expires_at: new Date(now + ttl).toISOString(),
   };
   if (isSupabaseConfigured) {
-    const { data, error } = await supabase.from('stories').insert({
+    const payload = {
       company_id: row.company_id,
       company_name: row.company_name,
       image_data: row.image_data,
@@ -126,7 +134,17 @@ export async function addStory(input: Omit<Story, 'id' | 'created_at' | 'expires
       latitude: row.latitude ?? null,
       longitude: row.longitude ?? null,
       expires_at: row.expires_at,
-    }).select('*').single();
+      status: row.status,
+    };
+    let inserted = await supabase.from('stories').insert(payload).select('*').single();
+    if (inserted.error && row.created_by === 'admin' && /status|schema cache|column/i.test(inserted.error.message)) {
+      const { status: _status, ...withoutStatus } = payload;
+      inserted = await supabase.from('stories').insert(withoutStatus).select('*').single();
+    }
+    if (inserted.error && row.created_by === 'merchant' && /status|schema cache|column/i.test(inserted.error.message)) {
+      throw new Error('Hikaye onay kuyruğu yok. 20260928210000_showcase_review.sql dosyasını çalıştırın.');
+    }
+    const { data, error } = inserted;
     if (error) throw error;
     const saved = asStory(data as Record<string, unknown>);
     writeJson(STORIES_KEY, [saved, ...readJson<Story>(STORIES_KEY).filter((item) => item.id !== saved.id)]);
@@ -134,6 +152,15 @@ export async function addStory(input: Omit<Story, 'id' | 'created_at' | 'expires
   }
   writeJson(STORIES_KEY, [row, ...readJson<Story>(STORIES_KEY)]);
   return row;
+}
+
+export async function approveStory(id: string) {
+  writeJson(STORIES_KEY, readJson<Story>(STORIES_KEY).map((item) => (
+    item.id === id ? { ...item, status: 'live' } : item
+  )));
+  if (!isSupabaseConfigured) return;
+  const { error } = await supabase.from('stories').update({ status: 'live' }).eq('id', id);
+  if (error) throw new Error(error.message || 'Hikaye onaylanamadı.');
 }
 
 export async function removeStory(id: string) {
@@ -147,10 +174,10 @@ export function nearbyStories(
   origin: { latitude: number; longitude: number } | null,
   source = readStories(),
 ): Story[] {
-  const rows = source;
+  const rows = source.filter((item) => item.status !== 'pending');
   if (!origin || !hasValidCoords(origin)) {
     return rows
-      .filter((item) => !item.company_id)
+      .filter((item) => item.created_by === 'admin' || !item.company_id)
       .sort((a, b) => Number(b.created_by === 'admin') - Number(a.created_by === 'admin') || byFreshness(a, b));
   }
   return rows
@@ -163,7 +190,7 @@ export function nearbyStories(
           : 0;
       return { item, meters };
     })
-    .filter((row) => !row.item.company_id || row.meters <= NEARBY_RADIUS_M)
+    .filter((row) => row.item.created_by === 'admin' || !row.item.company_id || row.meters <= storyRadiusM())
     .sort((a, b) => {
       const vip = Number(b.item.created_by === 'admin') - Number(a.item.created_by === 'admin');
       if (vip) return vip;
@@ -283,7 +310,13 @@ export function useLiveStories() {
     const sync = () => setRows(readStories());
     void refreshStories();
     window.addEventListener(STORY_EVENT, sync);
-    const stop = subscribeTables(['stories', 'story_permissions'], () => { void refreshStories(); });
+    const stop = subscribeTables(['stories', 'story_permissions'], (change) => {
+      if (change?.table === 'stories' && change.eventType === 'DELETE') {
+        const id = String(change.old?.id ?? '');
+        if (id) writeJson(STORIES_KEY, readJson<Story>(STORIES_KEY).filter((item) => item.id !== id));
+      }
+      void refreshStories();
+    });
     return () => {
       window.removeEventListener(STORY_EVENT, sync);
       stop();

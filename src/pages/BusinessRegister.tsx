@@ -1,17 +1,18 @@
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowLeft, BadgeCheck, Loader2, MapPin, ShieldCheck, Sparkles } from 'lucide-react';
 import { showErrorToast } from '@/components/ErrorToast';
 import { BusinessPendingScreen } from '@/components/BusinessPendingScreen';
 import { QapLaMark } from '@/components/QapLaMark';
 import { useAuth } from '@/lib/authContext';
 import {
-  BURSA_DISTRICTS,
   BUSINESS_SECTORS,
-  DISTRICT_COORDS,
   submitBusinessRegister,
 } from '@/lib/businesses';
 import { LocationMapPicker } from '@/components/maps/LocationMapPicker';
+import { formatDetailedAddress, geocodeDetailedAddress } from '@/lib/address';
 import { hasValidCoords } from '@/lib/geo';
+import { checkTaxOrNationalId } from '@/lib/identityNumber';
+import { subscriptionPlanText, useSubscriptionSettings } from '@/lib/subscription';
 
 export function BusinessRegisterPage({
   onBack,
@@ -29,16 +30,45 @@ export function BusinessRegisterPage({
   const [phone, setPhone] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [sector, setSector] = useState('');
+  const [city, setCity] = useState('Bursa');
   const [district, setDistrict] = useState('');
-  const [address, setAddress] = useState('');
+  const [neighborhood, setNeighborhood] = useState('');
+  const [street, setStreet] = useState('');
+  const [door, setDoor] = useState('');
   const [taxOffice, setTaxOffice] = useState('');
   const [taxNumber, setTaxNumber] = useState('');
   const [latitude, setLatitude] = useState(0);
   const [longitude, setLongitude] = useState(0);
   const [pinPicked, setPinPicked] = useState(false);
+  const [geoBusy, setGeoBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [planNote, setPlanNote] = useState<string | null>(null);
+  const subscription = useSubscriptionSettings();
+
+  const addressParts = { city, district, neighborhood, street, door };
+  const address = formatDetailedAddress(addressParts);
+
+  useEffect(() => {
+    if (pinPicked) return;
+    if (!city.trim() || !district.trim() || !neighborhood.trim() || !street.trim() || !door.trim()) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setGeoBusy(true);
+      void geocodeDetailedAddress(addressParts).then((point) => {
+        if (cancelled) return;
+        setGeoBusy(false);
+        if (!point) return;
+        setLatitude(point.latitude);
+        setLongitude(point.longitude);
+      });
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [city, district, neighborhood, street, door, pinPicked]);
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -57,14 +87,37 @@ export function BusinessRegisterPage({
         showErrorToast(message);
         return;
       }
-      if (!ownerName.trim() || !phone.trim() || !companyName.trim() || !sector || !district || !address.trim() || !taxOffice.trim() || !taxNumber.trim()) {
+      if (taxNumber.trim()) {
+        const identity = checkTaxOrNationalId(taxNumber);
+        if (!identity.ok) {
+          setError(identity.message);
+          showErrorToast(identity.message);
+          return;
+        }
+      }
+      if (!ownerName.trim() || !phone.trim() || !companyName.trim() || !sector || !city.trim() || !district.trim() || !neighborhood.trim() || !street.trim() || !door.trim()) {
         const message = 'Tüm zorunlu alanları doldurun.';
         setError(message);
         showErrorToast(message);
         return;
       }
-      if (!pinPicked || !hasValidCoords({ latitude, longitude })) {
-        const message = 'Haritadan işletmenin tam konumunu seçin.';
+      let nextLat = latitude;
+      let nextLng = longitude;
+      if (!pinPicked) {
+        const point = await geocodeDetailedAddress(addressParts);
+        if (!point) {
+          const message = 'Adres konuma çevrilemedi. İl, ilçe, mahalle ve sokağı kontrol edin.';
+          setError(message);
+          showErrorToast(message);
+          return;
+        }
+        nextLat = point.latitude;
+        nextLng = point.longitude;
+        setLatitude(nextLat);
+        setLongitude(nextLng);
+      }
+      if (!hasValidCoords({ latitude: nextLat, longitude: nextLng })) {
+        const message = 'Adres için geçerli bir konum bulunamadı.';
         setError(message);
         showErrorToast(message);
         return;
@@ -80,8 +133,8 @@ export function BusinessRegisterPage({
         address,
         taxOffice,
         taxNumber,
-        latitude,
-        longitude,
+        latitude: nextLat,
+        longitude: nextLng,
       });
       if (!result.ok) {
         const message = result.message ?? 'Başvuru gönderilemedi.';
@@ -90,6 +143,7 @@ export function BusinessRegisterPage({
         return;
       }
       onPending?.();
+      if (subscription.is_subscription_active) setPlanNote(subscriptionPlanText(subscription));
       setDone(true);
       void refreshProfile();
     } catch (err) {
@@ -102,7 +156,7 @@ export function BusinessRegisterPage({
   };
 
   if (done || pending) {
-    return <BusinessPendingScreen onBack={onBack} onSignOut={() => { void signOut(); onBack(); }} companyName={companyName} />;
+    return <BusinessPendingScreen onBack={onBack} onSignOut={() => { void signOut(); onBack(); }} companyName={companyName} planNote={planNote} />;
   }
 
   return (
@@ -129,39 +183,36 @@ export function BusinessRegisterPage({
           <Field label="Firma / işletme adı">
             <input type="text" required value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="İşletme unvanı" className={inputClass} />
           </Field>
+          <Field label="Sektör">
+            <select required value={sector} onChange={(e) => setSector(e.target.value)} className={inputClass}>
+              <option value="">Seçin</option>
+              {BUSINESS_SECTORS.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </Field>
           <div className="grid grid-cols-2 gap-2">
-            <Field label="Sektör">
-              <select required value={sector} onChange={(e) => setSector(e.target.value)} className={inputClass}>
-                <option value="">Seçin</option>
-                {BUSINESS_SECTORS.map((item) => <option key={item} value={item}>{item}</option>)}
-              </select>
+            <Field label="İl">
+              <input required value={city} onChange={(e) => { setPinPicked(false); setCity(e.target.value); }} placeholder="Bursa" className={inputClass} />
             </Field>
             <Field label="İlçe">
-              <select
-                required
-                value={district}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setDistrict(next);
-                  const fallback = DISTRICT_COORDS[next];
-                  if (fallback && !pinPicked) {
-                    setLatitude(fallback.latitude);
-                    setLongitude(fallback.longitude);
-                  }
-                }}
-                className={inputClass}
-              >
-                <option value="">Bursa</option>
-                {BURSA_DISTRICTS.map((item) => <option key={item} value={item}>{item}</option>)}
-              </select>
+              <input required value={district} onChange={(e) => { setPinPicked(false); setDistrict(e.target.value); }} placeholder="Nilüfer" className={inputClass} />
             </Field>
           </div>
-          <Field label="Açık adres">
-            <textarea required rows={3} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Mahalle, cadde, no" className={`${inputClass} resize-none`} />
+          <Field label="Mahalle">
+            <input required value={neighborhood} onChange={(e) => { setPinPicked(false); setNeighborhood(e.target.value); }} placeholder="Mahalle" className={inputClass} />
           </Field>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Cadde / Sokak">
+              <input required value={street} onChange={(e) => { setPinPicked(false); setStreet(e.target.value); }} placeholder="Cadde veya sokak" className={inputClass} />
+            </Field>
+            <Field label="Bina / Kapı no">
+              <input required value={door} onChange={(e) => { setPinPicked(false); setDoor(e.target.value); }} placeholder="12" className={inputClass} />
+            </Field>
+          </div>
           <div>
-            <p className="mb-1.5 text-sm font-semibold text-mint-800">Haritadan tam konum</p>
-            <p className="mb-2 text-[11px] font-normal text-gray-400">Pin bırakın veya konumumu kullanın. Onay sonrası işletme haritada burada görünür.</p>
+            <p className="mb-1.5 text-sm font-semibold text-mint-800">Konum</p>
+            <p className="mb-2 text-[11px] font-normal text-gray-400">
+              {geoBusy ? 'Adres konuma çevriliyor…' : 'Adres yazılınca enlem ve boylam hesaplanır. Pin ile düzeltebilirsin.'}
+            </p>
             <LocationMapPicker
               latitude={latitude}
               longitude={longitude}
@@ -171,23 +222,36 @@ export function BusinessRegisterPage({
                 setPinPicked(true);
               }}
             />
-            {pinPicked && hasValidCoords({ latitude, longitude }) ? (
+            {hasValidCoords({ latitude, longitude }) ? (
               <p className="mt-1 text-[10px] text-mint-600">{latitude.toFixed(6)}, {longitude.toFixed(6)}</p>
             ) : (
-              <p className="mt-1 text-[10px] text-red-500">Haritaya dokunarak pin bırakın.</p>
+              <p className="mt-1 text-[10px] text-gray-400">Adres tamamlanınca konum burada görünür.</p>
             )}
           </div>
         </Section>
         <Section title="Vergi">
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="Vergi dairesi">
-              <input type="text" required value={taxOffice} onChange={(e) => setTaxOffice(e.target.value)} placeholder="Nilüfer" className={inputClass} />
-            </Field>
-            <Field label="Vergi no">
-              <input type="text" required inputMode="numeric" value={taxNumber} onChange={(e) => setTaxNumber(e.target.value)} placeholder="10 haneli" className={inputClass} />
-            </Field>
-          </div>
+          <Field label="Vergi dairesi (isteğe bağlı)">
+            <input type="text" value={taxOffice} onChange={(e) => setTaxOffice(e.target.value)} placeholder="Nilüfer" className={inputClass} />
+          </Field>
+          <Field label="Vergi numarası veya T.C. kimlik numarası (isteğe bağlı)">
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={11}
+              value={taxNumber}
+              onChange={(e) => setTaxNumber(e.target.value.replace(/\D/g, '').slice(0, 11))}
+              placeholder="10 veya 11 hane"
+              className={inputClass}
+            />
+            <span className="mt-1 block text-[11px] font-normal text-gray-400">Boş bırakılırsa Standart Firma olarak kalır. Girilirse hane ve kontrol basamağı doğrulanır; yönetim onayından sonra yeşil tik açılır.</span>
+          </Field>
         </Section>
+        {subscription.is_subscription_active ? (
+          <p className="rounded-2xl border border-mint-100 bg-mint-50 px-3 py-2 text-xs font-semibold text-mint-800">
+            Abonelik: {subscriptionPlanText(subscription)}
+          </p>
+        ) : null}
         {error ? (
           <p className="rounded-2xl border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
         ) : null}

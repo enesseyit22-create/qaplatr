@@ -31,12 +31,28 @@ export function countFollowers(companyId: string) {
 export async function countFollowersRemote(companyId: string) {
   const local = countFollowers(companyId);
   if (!isSupabaseConfigured) return local;
-  const { count, error } = await supabase
+  const { data, error } = await supabase.rpc('count_company_followers', { p_company_id: companyId });
+  if (!error && data != null && data !== '') {
+    const next = Number(data);
+    if (Number.isFinite(next)) return next;
+  }
+  const counted = await supabase
     .from('follows')
     .select('*', { count: 'exact', head: true })
     .eq('business_id', companyId);
-  if (error || count == null) return local;
-  return Math.max(local, count);
+  if (counted.error || counted.count == null) return local;
+  return counted.count;
+}
+
+async function authUserId(fallback: string) {
+  const session = await supabase.auth.getUser();
+  return session.data.user?.id || fallback;
+}
+
+function remember(userId: string, ids: string[]) {
+  const map = readMap();
+  map[userId] = ids;
+  writeMap(map);
 }
 
 export async function setFollowing(userId: string, companyId: string, follow: boolean) {
@@ -47,27 +63,55 @@ export async function setFollowing(userId: string, companyId: string, follow: bo
   map[userId] = [...current];
   writeMap(map);
 
-  if (isSupabaseConfigured) {
-    if (follow) {
-      const { error } = await supabase.from('follows').upsert(
-        { user_id: userId, business_id: companyId },
-        { onConflict: 'user_id,business_id' },
-      );
-      if (!error) void notifyCompanyOfFollow(companyId);
-    } else {
-      await supabase.from('follows').delete().eq('user_id', userId).eq('business_id', companyId);
+  if (!isSupabaseConfigured) return follow;
+  const uid = await authUserId(userId);
+  if (follow) {
+    const { error } = await supabase.from('follows').upsert(
+      { user_id: uid, business_id: companyId },
+      { onConflict: 'user_id,business_id' },
+    );
+    if (error) {
+      current.delete(companyId);
+      map[userId] = [...current];
+      writeMap(map);
+      console.warn('Takip kaydı yazılamadı', error.message);
+      return false;
     }
+    if (uid !== userId) remember(uid, map[userId]);
+    void notifyCompanyOfFollow(companyId);
+    return true;
   }
-  return follow;
+
+  const { error } = await supabase.from('follows').delete().eq('user_id', uid).eq('business_id', companyId);
+  if (error) {
+    current.add(companyId);
+    map[userId] = [...current];
+    writeMap(map);
+    console.warn('Takip kaydı silinemedi', error.message);
+    return true;
+  }
+  if (uid !== userId) remember(uid, map[userId]);
+  return false;
 }
 
 export async function hydrateFollows(userId: string) {
   if (!isSupabaseConfigured || !userId) return listFollowedIds(userId);
-  const { data, error } = await supabase.from('follows').select('business_id').eq('user_id', userId);
+  const uid = await authUserId(userId);
+  const { data, error } = await supabase.from('follows').select('business_id').eq('user_id', uid);
   if (error || !data) return listFollowedIds(userId);
-  const ids = data.map((row) => String(row.business_id ?? '')).filter(Boolean);
-  const map = readMap();
-  map[userId] = ids;
-  writeMap(map);
+  let ids = data.map((row) => String(row.business_id ?? '')).filter(Boolean);
+  if (ids.length === 0) {
+    const pending = listFollowedIds(userId);
+    for (const companyId of pending) {
+      const saved = await supabase.from('follows').upsert(
+        { user_id: uid, business_id: companyId },
+        { onConflict: 'user_id,business_id' },
+      );
+      if (!saved.error) ids.push(companyId);
+    }
+    if (ids.length === 0 && pending.length > 0) return pending;
+  }
+  remember(userId, ids);
+  if (uid !== userId) remember(uid, ids);
   return ids;
 }
