@@ -1,0 +1,28 @@
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+
+def trustAllManager = [
+        checkClientTrusted: { X509Certificate[] chain, String authType -> },
+        checkServerTrusted: { X509Certificate[] chain, String authType -> },
+        getAcceptedIssuers: { new X509Certificate[0] }
+] as X509TrustManager
+
+['TLS', 'SSL'].each { protocol ->
+    try {
+        def sslContext = SSLContext.getInstance(protocol)
+        sslContext.init(null, [trustAllManager] as TrustManager[], new SecureRandom())
+        SSLContext.setDefault(sslContext)
+        HttpsURLConnection.setDefaultSSLSocketFactory(sslContext.socketFactory)
+    } catch (ignored) {}
+}
+
+HttpsURLConnection.setDefaultHostnameVerifier({ String hostname, session -> true } as HostnameVerifier)
+System.setProperty('com.sun.net.ssl.checkRevocation', 'false')
+System.setProperty('sun.security.ssl.allowUnsafeRenegotiation', 'true')
+System.setProperty('jdk.internal.httpclient.disableHostnameVerification', 'true')
+System.setProperty('jsse.enableSNIExtension', 'true')

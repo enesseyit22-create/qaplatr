@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Qap-la</string>
+    <string name="title_activity_main">Qap-la</string>
+    <string name="package_name">com.qapla.app</string>
+    <string name="custom_url_scheme">com.qapla.app</string>
+    <string name="google_maps_key" translatable="false">AIzaSyAOXNt4iImi8O4_dazVVurlJAx0hjaWvr8</string>
+</resources>

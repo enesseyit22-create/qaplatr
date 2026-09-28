@@ -1,0 +1,144 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "org.jetbrains.kotlinx",
+    "module": "kotlinx-coroutines-play-services",
+    "version": "1.8.1",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.5"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.8.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-bom",
+          "version": {
+            "requires": "1.8.1"
+          },
+          "attributes": {
+            "org.gradle.category": "platform"
+          },
+          "endorseStrictVersions": true
+        },
+        {
+          "group": "com.google.android.gms",
+          "module": "play-services-tasks",
+          "version": {
+            "requires": "16.0.1"
+          },
+          "excludes": [
+            {
+              "group": "com.android.support",
+              "module": "*"
+            }
+          ]
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "1.9.21"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "kotlinx-coroutines-play-services-1.8.1.jar",
+          "url": "kotlinx-coroutines-play-services-1.8.1.jar",
+          "size": 13181,
+          "sha512": "8d60112170fe7a4aabed4fa22891a37bebbbd246e3f6c1efbc8c80c51fecf321e58b3c1621805ffeb8c5efdd5ebbbd8d6f4ea2985e269ea2c44437c57576622d",
+          "sha256": "f90c2c76cab2fb3db89bf8a742bb4f36cba43e52472aeff3919e9143bd5ec072",
+          "sha1": "71eb0cace3aaa93591a613a32c92853c464d2a53",
+          "md5": "d6ace166fb7db5694c8d5c08a2e11c98"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.8.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-bom",
+          "version": {
+            "requires": "1.8.1"
+          },
+          "attributes": {
+            "org.gradle.category": "platform"
+          },
+          "endorseStrictVersions": true
+        },
+        {
+          "group": "com.google.android.gms",
+          "module": "play-services-tasks",
+          "version": {
+            "requires": "16.0.1"
+          },
+          "excludes": [
+            {
+              "group": "com.android.support",
+              "module": "*"
+            }
+          ]
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "1.9.21"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "kotlinx-coroutines-play-services-1.8.1.jar",
+          "url": "kotlinx-coroutines-play-services-1.8.1.jar",
+          "size": 13181,
+          "sha512": "8d60112170fe7a4aabed4fa22891a37bebbbd246e3f6c1efbc8c80c51fecf321e58b3c1621805ffeb8c5efdd5ebbbd8d6f4ea2985e269ea2c44437c57576622d",
+          "sha256": "f90c2c76cab2fb3db89bf8a742bb4f36cba43e52472aeff3919e9143bd5ec072",
+          "sha1": "71eb0cace3aaa93591a613a32c92853c464d2a53",
+          "md5": "d6ace166fb7db5694c8d5c08a2e11c98"
+        }
+      ]
+    }
+  ]
+}

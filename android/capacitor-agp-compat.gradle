@@ -1,0 +1,65 @@
+/**
+ * AGP 8.x + Capacitor library modules: sync*LibJars fails configuration when
+ * extract*Annotations never writes typedefs.txt (especially the release variant).
+ */
+def stubTypedefFiles(Project project) {
+    def variants = ['debug', 'release'] as LinkedHashSet
+    try {
+        def androidExt = project.extensions.findByName('android')
+        androidExt?.libraryVariants?.configureEach { variant ->
+            variants.add(variant.name)
+        }
+    } catch (ignored) {}
+
+    variants.each { variant ->
+        def cap = variant.substring(0, 1).toUpperCase() + variant.substring(1)
+        [
+            "intermediates/annotations_typedef_file/${variant}/extract${cap}Annotations/typedefs.txt",
+            "intermediates/annotations_typedef_file/${variant}/typedefs.txt",
+            "intermediates/annotations/${variant}/extract${cap}Annotations/typedefs.txt",
+            "intermediates/annotations/${variant}/typedefs.txt",
+        ].each { relative ->
+            def file = new File(project.buildDir, relative)
+            file.parentFile.mkdirs()
+            if (!file.exists()) {
+                file.text = ''
+            }
+        }
+    }
+}
+
+subprojects { subproject ->
+    subproject.pluginManager.withPlugin('com.android.library') {
+        stubTypedefFiles(subproject)
+    }
+
+    subproject.afterEvaluate {
+        def androidExt = subproject.extensions.findByName('android')
+        if (androidExt == null) {
+            return
+        }
+
+        stubTypedefFiles(subproject)
+
+        subproject.tasks.matching { task ->
+            def name = task.name
+            return name.startsWith('extract') && name.contains('Annotations')
+        }.configureEach { task ->
+            task.enabled = false
+            task.doFirst { stubTypedefFiles(subproject) }
+            task.doLast { stubTypedefFiles(subproject) }
+        }
+
+        subproject.tasks.matching { task ->
+            def name = task.name
+            return name.startsWith('sync') && name.endsWith('LibJars')
+        }.configureEach { task ->
+            stubTypedefFiles(subproject)
+            task.doFirst { stubTypedefFiles(subproject) }
+        }
+    }
+}
+
+gradle.projectsEvaluated {
+    rootProject.subprojects.each { stubTypedefFiles(it) }
+}
